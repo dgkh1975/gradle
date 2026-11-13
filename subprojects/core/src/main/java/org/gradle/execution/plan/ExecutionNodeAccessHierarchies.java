@@ -16,13 +16,14 @@
 
 package org.gradle.execution.plan;
 
+import org.gradle.api.internal.project.HoldsProjectState;
 import org.gradle.internal.file.Stat;
-import org.gradle.internal.service.scopes.Scopes;
+import org.gradle.internal.service.scopes.Scope;
 import org.gradle.internal.service.scopes.ServiceScope;
 import org.gradle.internal.snapshot.CaseSensitivity;
 
-@ServiceScope(Scopes.Build.class)
-public class ExecutionNodeAccessHierarchies {
+@ServiceScope(Scope.BuildTree.class)
+public class ExecutionNodeAccessHierarchies implements HoldsProjectState {
     private final ExecutionNodeAccessHierarchy outputHierarchy;
     private final ExecutionNodeAccessHierarchy destroyableHierarchy;
     private final CaseSensitivity caseSensitivity;
@@ -35,14 +36,10 @@ public class ExecutionNodeAccessHierarchies {
         destroyableHierarchy = new ExecutionNodeAccessHierarchy(caseSensitivity, stat);
     }
 
-    /**
-     * Create the input node access hierarchy.
-     *
-     * For performance reasons, we keep one input node access hierarchy per project,
-     * so we only have a factory method here and this is used to create the hierarchy in {@link org.gradle.execution.ProjectExecutionServices}.
-     */
-    public InputNodeAccessHierarchy createInputHierarchy() {
-        return new InputNodeAccessHierarchy(caseSensitivity, stat);
+    @Override
+    public void discardAll() {
+        outputHierarchy.clear();
+        destroyableHierarchy.clear();
     }
 
     public ExecutionNodeAccessHierarchy getOutputHierarchy() {
@@ -51,6 +48,17 @@ public class ExecutionNodeAccessHierarchies {
 
     public ExecutionNodeAccessHierarchy getDestroyableHierarchy() {
         return destroyableHierarchy;
+    }
+
+    /**
+     * Create the input node access hierarchy.
+     *
+     * <p>
+     * For performance reasons, we keep one input node access hierarchy per project, so we only have a factory method
+     * here and this is used to create the hierarchy in {@link org.gradle.execution.ProjectExecutionServices}.
+     */
+    public InputNodeAccessHierarchy createInputHierarchy() {
+        return new InputNodeAccessHierarchy(caseSensitivity, stat);
     }
 
     public static class InputNodeAccessHierarchy extends ExecutionNodeAccessHierarchy {

@@ -20,9 +20,7 @@ import org.gradle.api.logging.configuration.ShowStacktrace
 import org.gradle.caching.internal.controller.DefaultBuildCacheController
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import org.gradle.integtests.fixtures.DirectoryBuildCacheFixture
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
 import org.gradle.test.fixtures.file.TestFile
-import spock.lang.Unroll
 
 class CachedTaskExecutionErrorHandlingIntegrationTest extends AbstractIntegrationSpec implements DirectoryBuildCacheFixture {
 
@@ -78,7 +76,7 @@ class CachedTaskExecutionErrorHandlingIntegrationTest extends AbstractIntegratio
                 }
 
                 remote(FailingBuildCache) {
-                    shouldFail = gradle.startParameter.systemPropertiesArgs.get("failOn")
+                    shouldFail = System.getProperty("failOn")
                     push = true
                 }
             }
@@ -89,7 +87,6 @@ class CachedTaskExecutionErrorHandlingIntegrationTest extends AbstractIntegratio
         }
     }
 
-    @Unroll
     def "remote cache #failEvent error stack trace is printed when requested (#showStacktrace)"() {
         // Need to do it like this because stacktraces are always enabled for integration tests
         settingsFile << """
@@ -100,8 +97,9 @@ class CachedTaskExecutionErrorHandlingIntegrationTest extends AbstractIntegratio
             task customTask {
                 outputs.cacheIf { true }
                 outputs.file("build/output.txt")
+                def outputFile = file("build/output.txt")
                 doLast {
-                    file("build/output.txt").text = "Done"
+                    outputFile.text = "Done"
                 }
             }
         """
@@ -130,13 +128,7 @@ class CachedTaskExecutionErrorHandlingIntegrationTest extends AbstractIntegratio
         "store"   | ShowStacktrace.ALWAYS_FULL         | true
     }
 
-    @Unroll
-    @ToBeFixedForConfigurationCache(because = "FailingBuildCache has not been registered.")
     def "remote cache is disabled after first #failEvent error for the current build"() {
-        // Need to do it like this because stacktraces are always enabled for integration tests
-        settingsFile << """
-            gradle.startParameter.setShowStacktrace(org.gradle.api.logging.configuration.ShowStacktrace.INTERNAL_EXCEPTIONS)
-        """
 
         buildFile << """
             task firstTask {
@@ -159,7 +151,9 @@ class CachedTaskExecutionErrorHandlingIntegrationTest extends AbstractIntegratio
             }
         """
 
-        executer.withStackTraceChecksDisabled()
+        executer.beforeExecute {
+            executer.withStackTraceChecksDisabled()
+        }
 
         when:
         succeeds "secondTask", "-DfailOn=$failEvent"

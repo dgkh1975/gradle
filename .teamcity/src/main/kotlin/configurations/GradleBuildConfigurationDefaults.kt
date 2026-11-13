@@ -1,68 +1,36 @@
 package configurations
 
+import common.Arch
+import common.BuildToolBuildJvm
+import common.Jvm
+import common.KillProcessMode.KILL_ALL_GRADLE_PROCESSES
+import common.KillProcessMode.KILL_LEAKED_PROCESSES_FROM_PREVIOUS_BUILDS
+import common.KillProcessMode.KILL_PROCESSES_STARTED_BY_GRADLE
 import common.Os
+import common.VersionedSettingsBranch
 import common.applyDefaultSettings
+import common.buildScanTagParam
 import common.buildToolGradleParameters
-import common.checkCleanM2AndAndroidUserHome
+import common.cleanUpGitUntrackedFilesAndDirectories
 import common.compileAllDependency
 import common.functionalTestParameters
 import common.gradleWrapper
 import common.killProcessStep
-import jetbrains.buildServer.configs.kotlin.v2019_2.BuildFeatures
-import jetbrains.buildServer.configs.kotlin.v2019_2.BuildStep
-import jetbrains.buildServer.configs.kotlin.v2019_2.BuildSteps
-import jetbrains.buildServer.configs.kotlin.v2019_2.BuildType
-import jetbrains.buildServer.configs.kotlin.v2019_2.FailureAction
-import jetbrains.buildServer.configs.kotlin.v2019_2.ProjectFeatures
-import jetbrains.buildServer.configs.kotlin.v2019_2.RelativeId
-import jetbrains.buildServer.configs.kotlin.v2019_2.buildFeatures.PullRequests
-import jetbrains.buildServer.configs.kotlin.v2019_2.buildFeatures.commitStatusPublisher
-import jetbrains.buildServer.configs.kotlin.v2019_2.buildFeatures.pullRequests
-import jetbrains.buildServer.configs.kotlin.v2019_2.buildSteps.script
+import common.onlyRunOnGitHubMergeQueueBranch
+import jetbrains.buildServer.configs.kotlin.BuildFeatures
+import jetbrains.buildServer.configs.kotlin.BuildStep.ExecutionMode
+import jetbrains.buildServer.configs.kotlin.BuildSteps
+import jetbrains.buildServer.configs.kotlin.BuildType
+import jetbrains.buildServer.configs.kotlin.ProjectFeatures
+import jetbrains.buildServer.configs.kotlin.buildFeatures.PullRequests
+import jetbrains.buildServer.configs.kotlin.buildFeatures.commitStatusPublisher
+import jetbrains.buildServer.configs.kotlin.buildFeatures.parallelTests
+import jetbrains.buildServer.configs.kotlin.buildFeatures.pullRequests
+import jetbrains.buildServer.configs.kotlin.buildSteps.script
 import model.CIBuildModel
-import model.StageNames
 
-val m2CleanScriptUnixLike = """
-    REPO=%teamcity.agent.jvm.user.home%/.m2/repository
-    if [ -e ${'$'}REPO ] ; then
-        tree ${'$'}REPO
-        rm -rf ${'$'}REPO
-        echo "${'$'}REPO was polluted during the build"
-        exit 1
-    else
-        echo "${'$'}REPO does not exist"
-    fi
-
-""".trimIndent()
-
-val m2CleanScriptWindows = """
-    IF exist %teamcity.agent.jvm.user.home%\.m2\repository (
-        TREE %teamcity.agent.jvm.user.home%\.m2\repository
-        RMDIR /S /Q %teamcity.agent.jvm.user.home%\.m2\repository
-        EXIT 1
-    )
-
-""".trimIndent()
-
-val checkCleanAndroidUserHomeScriptUnixLike = """
-    ANDROID_USER_HOME=%teamcity.agent.jvm.user.home%/.android
-    if [ -e ${'$'}ANDROID_USER_HOME ] ; then
-        tree ${'$'}ANDROID_USER_HOME
-        rm -rf ${'$'}ANDROID_USER_HOME
-        echo "${'$'}ANDROID_USER_HOME was polluted during the build"
-        # exit 1
-    else
-        echo "${'$'}ANDROID_USER_HOME does not exist"
-    fi
-""".trimIndent()
-
-val checkCleanAndroidUserHomeScriptWindows = """
-    IF exist %teamcity.agent.jvm.user.home%\.android (
-        TREE %teamcity.agent.jvm.user.home%\.android
-        RMDIR /S /Q %teamcity.agent.jvm.user.home%\.android
-        REM EXIT 1
-    )
-""".trimIndent()
+const val GRADLE_RUNNER_STEP_NAME = "GRADLE_RUNNER"
+const val GRADLE_RETRY_RUNNER_STEP_NAME = "GRADLE_RETRY_RUNNER"
 
 fun BuildFeatures.publishBuildStatusToGithub(model: CIBuildModel) {
     if (model.publishStatusToGitHub) {
@@ -70,32 +38,58 @@ fun BuildFeatures.publishBuildStatusToGithub(model: CIBuildModel) {
     }
 }
 
-fun BuildFeatures.triggeredOnPullRequests(model: CIBuildModel) {
+fun BuildFeatures.enablePullRequestFeature() {
     pullRequests {
-        vcsRootExtId = "Gradle_Branches_GradlePersonalBranches"
-        provider = github {
-            authType = token {
-                token = "%github.bot-gradle.token%"
+        vcsRootExtId = VersionedSettingsBranch.fromDslContext().vcsRootId()
+        provider =
+            github {
+                authType =
+                    token {
+                        token = "%github.bot-teamcity.token%"
+                    }
+                filterAuthorRole = PullRequests.GitHubRoleFilter.EVERYBODY
+                filterTargetBranch = "+:refs/heads/${VersionedSettingsBranch.fromDslContext().branchName}"
             }
-            filterAuthorRole = PullRequests.GitHubRoleFilter.MEMBER
-            filterTargetBranch = model.branch.branchFilter()
+    }
+}
+
+fun BaseGradleBuildType.tcParallelTests(numberOfBatches: Int) {
+    if (numberOfBatches > 1) {
+        params {
+            param("env.TEAMCITY_PARALLEL_TESTS_ENABLED", "1")
+        }
+        features {
+            parallelTests {
+                this.numberOfBatches = numberOfBatches
+                groupArtifactsByBuild = true
+            }
         }
     }
 }
 
 fun BuildFeatures.publishBuildStatusToGithub() {
+    if (VersionedSettingsBranch.fromDslContext().isExperimental) {
+        // don't publish xperimental commit status that might bother developer
+        return
+    }
+
     commitStatusPublisher {
-        vcsRootExtId = "Gradle_Branches_GradlePersonalBranches"
-        publisher = github {
-            githubUrl = "https://api.github.com"
-            authType = personalToken {
-                token = "%github.bot-gradle.token%"
+        vcsRootExtId = VersionedSettingsBranch.fromDslContext().vcsRootId()
+        publisher =
+            github {
+                githubUrl = "https://api.github.com"
+                authType =
+                    personalToken {
+                        token = "%github.bot-gradle.token%"
+                    }
             }
-        }
     }
 }
 
-fun ProjectFeatures.buildReportTab(title: String, startPage: String) {
+fun ProjectFeatures.buildReportTab(
+    title: String,
+    startPage: String,
+) {
     feature {
         type = "ReportTab"
         param("startPage", startPage)
@@ -104,128 +98,134 @@ fun ProjectFeatures.buildReportTab(title: String, startPage: String) {
     }
 }
 
-fun BaseGradleBuildType.gradleRunnerStep(model: CIBuildModel, gradleTasks: String, os: Os = Os.LINUX, extraParameters: String = "", daemon: Boolean = true) {
-    val buildScanTags = model.buildScanTags + listOfNotNull(stage?.id)
-    val parameters = (
-        buildToolGradleParameters(daemon) +
-            listOf(extraParameters) +
-            buildScanTags.map { buildScanTag(it) } +
-            functionalTestParameters(os)
+fun BaseGradleBuildType.gradleRunnerStep(
+    model: CIBuildModel,
+    gradleTasks: String,
+    os: Os = Os.LINUX,
+    arch: Arch = Arch.AMD64,
+    extraParameters: String = "",
+    maxParallelForks: String = "%maxParallelForks%",
+    isRetry: Boolean = false,
+) {
+    val stepName: String = if (isRetry) GRADLE_RETRY_RUNNER_STEP_NAME else GRADLE_RUNNER_STEP_NAME
+    val stepExecutionMode: ExecutionMode = if (isRetry) ExecutionMode.RUN_ONLY_ON_FAILURE else ExecutionMode.DEFAULT
+    val extraBuildScanTags: List<String> = if (isRetry) listOf("RetriedBuild") else emptyList()
+
+    val buildScanTags = model.buildScanTags + listOfNotNull(stage?.id) + extraBuildScanTags
+    val parameters =
+        (
+            buildToolGradleParameters(maxParallelForks = maxParallelForks) +
+                listOf(extraParameters) +
+                buildScanTags.map { buildScanTagParam(it) } +
+                functionalTestParameters(os, arch)
         ).joinToString(separator = " ")
 
     steps {
-        gradleWrapper {
-            name = "GRADLE_RUNNER"
+        gradleWrapper(this@gradleRunnerStep) {
+            id = stepName
+            name = stepName
             tasks = "clean $gradleTasks"
             gradleParams = parameters
+            executionMode = stepExecutionMode
+            if (isRetry) {
+                onlyRunOnGitHubMergeQueueBranch()
+            }
+        }
+        if (isRetry) {
+            script {
+                name = "MARK_BUILD_SUCCESSFUL_ON_RETRY_SUCCESS"
+                id = name
+                executionMode = ExecutionMode.RUN_ONLY_ON_FAILURE
+                conditions {
+                    equals("teamcity.build.step.status.$GRADLE_RUNNER_STEP_NAME", "failure")
+                    equals("teamcity.build.step.status.$GRADLE_RETRY_RUNNER_STEP_NAME", "success")
+                }
+                scriptContent =
+                    """
+                    echo "marking this build as successful because the retry build succeeded"
+                    echo "##teamcity[buildStatus status='SUCCESS']"
+                    echo "##teamcity[addBuildTag 'BuildRetrySuccess']"
+                    """.trimIndent()
+            }
         }
     }
 }
 
-private
-fun BuildType.attachFileLeakDetector() {
-    steps {
-        script {
-            name = "ATTACH_FILE_LEAK_DETECTOR"
-            executionMode = BuildStep.ExecutionMode.ALWAYS
-            scriptContent = """
-            "%windows.java11.openjdk.64bit%\bin\java" gradle/AttachAgentToDaemon.java
-        """.trimIndent()
-        }
-    }
-}
+fun applyDefaults(
+    model: CIBuildModel,
+    buildType: BaseGradleBuildType,
+    gradleTasks: String,
+    os: Os = Os.LINUX,
+    arch: Arch = Arch.AMD64,
+    extraParameters: String = "",
+    timeout: Int = 90,
+    buildJvm: Jvm = BuildToolBuildJvm,
+    extraSteps: BuildSteps.() -> Unit = {},
+) {
+    buildType.applyDefaultSettings(os, timeout = timeout, buildJvm = buildJvm)
 
-private
-fun BuildType.dumpOpenFiles() {
-    steps {
-        // This is a workaround for https://youtrack.jetbrains.com/issue/TW-24782
-        script {
-            name = "SET_BUILD_SUCCESS_ENV"
-            executionMode = BuildStep.ExecutionMode.RUN_ON_SUCCESS
-            scriptContent = """
-                echo "##teamcity[setParameter name='env.PREV_BUILD_STATUS' value='SUCCESS']"
-            """.trimIndent()
-        }
-        script {
-            name = "DUMP_OPEN_FILES_ON_FAILURE"
-            executionMode = BuildStep.ExecutionMode.ALWAYS
-            scriptContent = """
-                "%windows.java11.openjdk.64bit%\bin\java" gradle\DumpOpenFilesOnFailure.java
-            """.trimIndent()
-        }
-    }
-}
-
-fun applyDefaults(model: CIBuildModel, buildType: BaseGradleBuildType, gradleTasks: String, notQuick: Boolean = false, os: Os = Os.LINUX, extraParameters: String = "", timeout: Int = 90, extraSteps: BuildSteps.() -> Unit = {}, daemon: Boolean = true) {
-    buildType.applyDefaultSettings(os, timeout = timeout)
-
-    buildType.killProcessStep("KILL_LEAKED_PROCESSES_FROM_PREVIOUS_BUILDS", daemon)
-    buildType.gradleRunnerStep(model, gradleTasks, os, extraParameters, daemon)
+    buildType.killProcessStep(KILL_LEAKED_PROCESSES_FROM_PREVIOUS_BUILDS, os)
+    buildType.gradleRunnerStep(model, gradleTasks, os, arch, extraParameters)
 
     buildType.steps {
         extraSteps()
-        checkCleanM2AndAndroidUserHome(os)
+        killProcessStep(buildType, KILL_PROCESSES_STARTED_BY_GRADLE, os, arch, executionMode = ExecutionMode.ALWAYS)
     }
 
-    applyDefaultDependencies(model, buildType, notQuick)
+    applyDefaultDependencies(model, buildType)
+}
+
+private fun BaseGradleBuildType.addRetrySteps(
+    model: CIBuildModel,
+    gradleTasks: String,
+    os: Os = Os.LINUX,
+    arch: Arch = Arch.AMD64,
+    extraParameters: String = "",
+    maxParallelForks: String = "%maxParallelForks%",
+) {
+    killProcessStep(KILL_ALL_GRADLE_PROCESSES, os, arch, executionMode = ExecutionMode.RUN_ONLY_ON_FAILURE)
+    cleanUpGitUntrackedFilesAndDirectories()
+    gradleRunnerStep(model, gradleTasks, os, arch, extraParameters, maxParallelForks = maxParallelForks, isRetry = true)
 }
 
 fun applyTestDefaults(
     model: CIBuildModel,
     buildType: BaseGradleBuildType,
     gradleTasks: String,
-    notQuick: Boolean = false,
+    buildJvm: Jvm = BuildToolBuildJvm,
     os: Os = Os.LINUX,
+    arch: Arch = Arch.AMD64,
     extraParameters: String = "",
     timeout: Int = 90,
+    maxParallelForks: String = "%maxParallelForks%",
     extraSteps: BuildSteps.() -> Unit = {}, // the steps after runner steps
-    daemon: Boolean = true,
-    preSteps: BuildSteps.() -> Unit = {} // the steps before runner steps
+    preSteps: BuildSteps.() -> Unit = {}, // the steps before runner steps
 ) {
-    buildType.applyDefaultSettings(os, timeout = timeout)
+    buildType.applyDefaultSettings(os, timeout = timeout, buildJvm = buildJvm, arch = arch)
 
     buildType.steps {
         preSteps()
     }
 
-    if (os == Os.WINDOWS) {
-        buildType.attachFileLeakDetector()
-    }
-
-    buildType.killProcessStep("KILL_LEAKED_PROCESSES_FROM_PREVIOUS_BUILDS", daemon)
-
-    buildType.gradleRunnerStep(model, gradleTasks, os, extraParameters, daemon)
-
-    if (os == Os.WINDOWS) {
-        buildType.dumpOpenFiles()
-    }
-    buildType.killProcessStep("KILL_PROCESSES_STARTED_BY_GRADLE", daemon)
+    buildType.killProcessStep(KILL_LEAKED_PROCESSES_FROM_PREVIOUS_BUILDS, os, arch)
+    buildType.gradleRunnerStep(model, gradleTasks, os, arch, extraParameters, maxParallelForks = maxParallelForks)
+    buildType.addRetrySteps(model, gradleTasks, os, arch, extraParameters)
+    buildType.killProcessStep(KILL_PROCESSES_STARTED_BY_GRADLE, os, arch, executionMode = ExecutionMode.ALWAYS)
 
     buildType.steps {
         extraSteps()
-        checkCleanM2AndAndroidUserHome(os)
     }
 
-    applyDefaultDependencies(model, buildType, notQuick)
+    applyDefaultDependencies(model, buildType)
 }
 
-fun buildScanTag(tag: String) = """"-Dscan.tag.$tag""""
-fun buildScanCustomValue(key: String, value: String) = """"-Dscan.value.$key=$value""""
-fun applyDefaultDependencies(model: CIBuildModel, buildType: BuildType, notQuick: Boolean = false) {
-    if (notQuick) {
-        // wait for quick feedback phase to finish successfully
+fun applyDefaultDependencies(
+    model: CIBuildModel,
+    buildType: BuildType,
+) {
+    if (buildType !is CompileAll) {
         buildType.dependencies {
-            dependency(RelativeId(stageTriggerId(model, StageNames.QUICK_FEEDBACK_LINUX_ONLY))) {
-                snapshot {
-                    onDependencyFailure = FailureAction.FAIL_TO_START
-                    onDependencyCancel = FailureAction.FAIL_TO_START
-                }
-            }
-        }
-    }
-    if (buildType !is CompileAllProduction) {
-        buildType.dependencies {
-            compileAllDependency(CompileAllProduction.buildTypeId(model))
+            compileAllDependency(CompileAll.buildTypeId(model))
         }
     }
 }

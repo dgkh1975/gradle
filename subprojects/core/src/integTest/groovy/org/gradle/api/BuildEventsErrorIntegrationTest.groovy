@@ -17,8 +17,7 @@
 package org.gradle.api
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.integtests.fixtures.UnsupportedWithConfigurationCache
-import spock.lang.Unroll
+import org.gradle.integtests.fixtures.modes.UnsupportedWithConfigurationCache
 
 class BuildEventsErrorIntegrationTest extends AbstractIntegrationSpec {
 
@@ -79,23 +78,22 @@ class BuildEventsErrorIntegrationTest extends AbstractIntegrationSpec {
     }
 
     def "produces reasonable error when Gradle.allprojects action fails"() {
-        def initScript = file("init.gradle") << """
-allprojects {
-    throw new RuntimeException("broken")
-}
-"""
+        initScriptFile """
+            allprojects {
+                throw new RuntimeException("broken")
+            }
+        """
         when:
-        executer.usingInitScript(initScript)
+        executer.usingInitScript(initScriptFile)
         fails "a"
 
         then:
         failure.assertHasDescription("broken")
                 .assertHasNoCause()
-                .assertHasFileName("Initialization script '$initScript'")
+                .assertHasFileName("Initialization script '$initScriptFile'")
                 .assertHasLineNumber(3)
     }
 
-    @Unroll
     @UnsupportedWithConfigurationCache(iterationMatchers = ".*Gradle.buildFinished.*")
     def "produces reasonable error when Gradle.#method closure fails"() {
         settingsFile << """
@@ -121,7 +119,6 @@ gradle.rootProject { task a }
         "buildFinished"     | _
     }
 
-    @Unroll
     @UnsupportedWithConfigurationCache(iterationMatchers = ".*Gradle.buildFinished.*")
     def "produces reasonable error when Gradle.#method action fails"() {
         settingsFile << """
@@ -148,7 +145,6 @@ gradle.rootProject { task a }
         "buildFinished"     | _
     }
 
-    @Unroll
     @UnsupportedWithConfigurationCache
     def "produces reasonable error when BuildListener.#method method fails"() {
         settingsFile << """
@@ -195,7 +191,7 @@ gradle.rootProject { task a }
 
         then:
         failure.assertHasFailures(2)
-        failure.assertHasDescription("Execution failed for task ':broken'.")
+        failure.assertHasDescription("Execution failed for task ':broken' (registered in build file 'build.gradle').")
                 .assertHasCause("broken task")
                 .assertHasFileName("Build file '$buildFile'")
                 .assertHasLineNumber(6)

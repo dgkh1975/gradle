@@ -16,25 +16,35 @@
 
 package org.gradle.api
 
+import org.gradle.api.problems.Severity
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
-import org.gradle.integtests.fixtures.executer.GradleContextualExecuter
+import org.gradle.integtests.fixtures.executer.IntegrationTestBuildContext
 import org.gradle.integtests.fixtures.executer.ProjectLifecycleFixture
 import org.gradle.integtests.fixtures.extensions.FluidDependenciesResolveTest
+import org.gradle.integtests.fixtures.modes.ToBeFixedForConfigurationCache
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
+import org.gradle.integtests.fixtures.modes.UnsupportedWithConfigurationCache
+import org.gradle.integtests.fixtures.timeout.IntegrationTestTimeout
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 import org.junit.Rule
-import spock.lang.IgnoreIf
 import spock.lang.Issue
 
 @FluidDependenciesResolveTest
 class ConfigurationOnDemandIntegrationTest extends AbstractIntegrationSpec {
 
-    @Rule ProjectLifecycleFixture fixture = new ProjectLifecycleFixture(executer, temporaryFolder)
+    @Rule
+    ProjectLifecycleFixture fixture = new ProjectLifecycleFixture(executer, temporaryFolder)
 
     def setup() {
         file("gradle.properties") << "org.gradle.configureondemand=true"
+        enableProblemsApiCheck()
     }
 
-    @IgnoreIf({ GradleContextualExecuter.isParallel() }) //parallel mode hides incubating message
+    @Requires(
+        value = [TestExecutionPreconditions.NotParallelExecutor, TestExecutionPreconditions.NotIsolatedProjects],
+        reason = "these features hide incubating message"
+    )
     def "presents incubating message"() {
         file("gradle.properties") << "org.gradle.configureondemand=false"
         buildFile << "task foo"
@@ -47,7 +57,10 @@ class ConfigurationOnDemandIntegrationTest extends AbstractIntegrationSpec {
         output.count("Configuration on demand is an incubating feature") == 1
     }
 
-    @IgnoreIf({ GradleContextualExecuter.isParallel() }) //parallel mode hides incubating message
+    @Requires(
+        value = [TestExecutionPreconditions.NotParallelExecutor, TestExecutionPreconditions.NotIsolatedProjects],
+        reason = "these features hide incubating message"
+    )
     def "presents incubating message with parallel mode"() {
         file("gradle.properties") << "org.gradle.configureondemand=false"
         buildFile << "task foo"
@@ -71,7 +84,9 @@ class ConfigurationOnDemandIntegrationTest extends AbstractIntegrationSpec {
         fixture.assertProjectsConfigured(":")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects")
     def "evaluates only project referenced in the task list"() {
+        createDirs("api", "impl", "util", "util/impl")
         settingsFile << "include 'api', 'impl', 'util', 'util:impl'"
         buildFile << "allprojects { task foo }"
 
@@ -92,6 +107,7 @@ class ConfigurationOnDemandIntegrationTest extends AbstractIntegrationSpec {
 
     @ToBeFixedForConfigurationCache(because = "test expects configuration phase")
     def "follows java project dependencies"() {
+        createDirs("api", "impl", "util")
         settingsFile << "include 'api', 'impl', 'util'"
         buildFile << "allprojects { apply plugin: 'java-library' } "
 
@@ -137,12 +153,14 @@ class ConfigurationOnDemandIntegrationTest extends AbstractIntegrationSpec {
         fixture.assertProjectsConfigured(":", ":util", ":impl", ":api")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects, configure projects from root")
     def "can have cycles in project dependencies"() {
+        createDirs("api", "impl", "util")
         settingsFile << "include 'api', 'impl', 'util'"
         buildFile << """
 allprojects { apply plugin: 'java-library' }
 project(':impl') {
-    dependencies { implementation project(path: ':api', configuration: 'archives') }
+    dependencies { implementation project(':api') }
 }
 project(':api') {
     dependencies { runtimeOnly project(':impl') }
@@ -157,7 +175,9 @@ project(':api') {
         fixture.assertProjectsConfigured(":", ":api", ':impl')
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "follows project dependencies when run in subproject"() {
+        createDirs("api", "impl", "util")
         settingsFile << "include 'api', 'impl', 'util'"
 
         file("api/build.gradle") << "configurations { api }"
@@ -175,7 +195,9 @@ project(':api') {
         fixture.assertProjectsConfigured(':', ':impl', ':api')
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "name matching execution from root evaluates all projects"() {
+        createDirs("api", "impl")
         settingsFile << "include 'api', 'impl'"
         buildFile << "task foo"
 
@@ -192,7 +214,9 @@ project(':api') {
         fixture.assertProjectsConfigured(":")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "name matching execution from subproject evaluates only the subproject recursively"() {
+        createDirs("api", "impl", "impl/one", "impl/two", "impl/two/abc")
         settingsFile << "include 'api', 'impl:one', 'impl:two', 'impl:two:abc'"
         file("impl/build.gradle") << "task foo"
 
@@ -204,7 +228,9 @@ project(':api') {
         fixture.assertProjectsConfigured(":", ":impl", ":impl:one", ":impl:two", ":impl:two:abc")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "may run implicit tasks from root"() {
+        createDirs("api", "impl")
         settingsFile << "include 'api', 'impl'"
 
         when:
@@ -214,7 +240,9 @@ project(':api') {
         fixture.assertProjectsConfigured(":")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "may run implicit tasks for subproject"() {
+        createDirs("api", "impl")
         settingsFile << "include 'api', 'impl'"
 
         when:
@@ -224,7 +252,9 @@ project(':api') {
         fixture.assertProjectsConfigured(":", ":api")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "respects default tasks"() {
+        createDirs("api", "impl")
         settingsFile << "include 'api', 'impl'"
         file("api/build.gradle") << """
             task foo
@@ -237,10 +267,12 @@ project(':api') {
 
         then:
         fixture.assertProjectsConfigured(":", ":api")
-        result.assertTasksExecuted(':api:foo')
+        result.assertTasksScheduled(':api:foo')
     }
 
+    @ToBeFixedForIsolatedProjects(because = "evaluationDependsOn is not IP compatible")
     def "respects evaluationDependsOn"() {
+        createDirs("api", "impl", "other")
         settingsFile << "include 'api', 'impl', 'other'"
         file("api/build.gradle") << """
             evaluationDependsOn(":impl")
@@ -255,6 +287,7 @@ project(':api') {
 
     @ToBeFixedForConfigurationCache(because = "test expects configuration phase")
     def "respects buildProjectDependencies setting"() {
+        createDirs("api", "impl", "other")
         settingsFile << "include 'api', 'impl', 'other'"
         file("impl/build.gradle") << """
             apply plugin: 'java-library'
@@ -281,7 +314,9 @@ project(':api') {
         fixture.assertProjectsConfigured(":", ":impl", ":api")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects")
     def "respects external task dependencies"() {
+        createDirs("api", "impl", "other")
         settingsFile << "include 'api', 'impl', 'other'"
         file("build.gradle") << "allprojects { task foo }"
         file("impl/build.gradle") << """
@@ -293,7 +328,7 @@ project(':api') {
 
         then:
         fixture.assertProjectsConfigured(":", ":impl", ":api")
-        result.assertTasksExecutedInOrder(":api:foo", ":impl:bar")
+        result.assertTasksScheduledInOrder(":api:foo", ":impl:bar")
     }
 
     def "supports buildSrc"() {
@@ -316,7 +351,9 @@ project(':api') {
         output.contains "Horray!!!"
     }
 
+    @UnsupportedWithConfigurationCache(because = "runs configuration at execution time")
     def "may configure project at execution time"() {
+        createDirs("a", "b", "c")
         settingsFile << "include 'a', 'b', 'c'"
         file('a/build.gradle') << """
             configurations { conf }
@@ -340,7 +377,9 @@ project(':api') {
         fixture.assertProjectsConfigured(":", ":a", ":b")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "handles buildNeeded"() {
+        createDirs("a", "b", "c")
         settingsFile << "include 'a', 'b', 'c'"
         file("a/build.gradle") << """ apply plugin: 'java' """
         file("b/build.gradle") << """
@@ -351,14 +390,30 @@ project(':api') {
         """
 
         when:
+        executer.expectDocumentedDeprecationWarning("The buildNeeded task has been deprecated. This is scheduled to be removed in Gradle 10. Consult the upgrading guide for further information: https://docs.gradle.org/current/userguide/upgrading_version_9.html#deprecate_build_needed_build_dependents_tasks")
         run(":b:buildNeeded")
 
         then:
         executed ':b:buildNeeded', ':a:buildNeeded'
         fixture.assertProjectsConfigured(":", ":b", ":a")
+        // The deprecation warning is emitted once per :buildNeeded task that runs (1 under embedded, 2 under CC).
+        receivedProblems.size().times { i ->
+            verifyAll(receivedProblem(i)) {
+                severity == Severity.WARNING
+                fqid == 'Gradle:Deprecation:Task usage'
+                definition.id.displayName == 'Task usage'
+                contextualLabel == 'The buildNeeded task has been deprecated.'
+                details == 'This is scheduled to be removed in Gradle 10.'
+                solutions == []
+                additionalData.asMap == ['type': 'USER_CODE_DIRECT']
+                originLocations.size() == 1
+            }
+        }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "buildDependents is not IP compatible, configure projects from root,")
     def "handles buildDependents"() {
+        createDirs("a", "b", "c")
         settingsFile << "include 'a', 'b', 'c'"
         file("a/build.gradle") << """ apply plugin: 'java' """
         file("b/build.gradle") << """
@@ -369,15 +424,31 @@ project(':api') {
         """
 
         when:
+        executer.expectDocumentedDeprecationWarning("The buildDependents task has been deprecated. This is scheduled to be removed in Gradle 10. Consult the upgrading guide for further information: https://docs.gradle.org/current/userguide/upgrading_version_9.html#deprecate_build_needed_build_dependents_tasks")
         run(":a:buildDependents")
 
         then:
         executed ':b:buildDependents', ':a:buildDependents'
         //unfortunately buildDependents requires all projects to be configured
         fixture.assertProjectsConfigured(":", ":a", ":b", ":c")
+        // The deprecation warning is emitted once per :buildDependents task that runs (1 under embedded, 2 under CC).
+        receivedProblems.size().times { i ->
+            verifyAll(receivedProblem(i)) {
+                severity == Severity.WARNING
+                fqid == 'Gradle:Deprecation:Task usage'
+                definition.id.displayName == 'Task usage'
+                contextualLabel == 'The buildDependents task has been deprecated.'
+                details == 'This is scheduled to be removed in Gradle 10.'
+                solutions == []
+                additionalData.asMap == ['type': 'USER_CODE_DIRECT']
+                originLocations.size() == 1
+            }
+        }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "configure-on-demand is not supported in IP mode")
     def "task command-line argument may look like a task path"() {
+        createDirs("a", "b", "c")
         settingsFile << "include 'a', 'b', 'c'"
         file("a/build.gradle") << """
 task one(type: SomeTask)
@@ -394,11 +465,13 @@ class SomeTask extends DefaultTask {
         run(":a:one", "--value", ":b:thing", "a:two", "--value", "unknown:unknown")
 
         then:
-        result.assertTasksExecuted(":a:one", ":a:two")
+        result.assertTasksScheduled(":a:one", ":a:two")
         fixture.assertProjectsConfigured(":", ":a")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects")
     def "does not configure all projects when excluded task path is not qualified and is exact match for task in default project"() {
+        createDirs("a", "a/child", "b", "b/child", "c")
         settingsFile << "include 'a', 'a:child', 'b', 'b:child', 'c'"
         file('a').mkdirs()
         file('b').mkdirs()
@@ -414,7 +487,7 @@ allprojects {
         run(":a:one", "-x", "two", "-x", "three")
 
         then:
-        result.assertTasksExecuted(":a:one")
+        result.assertTasksScheduled(":a:one")
         fixture.assertProjectsConfigured(":", ":a")
 
         when:
@@ -422,7 +495,7 @@ allprojects {
         run(":a:one", "-x", "two", "-x", "three")
 
         then:
-        result.assertTasksExecuted(":a:one")
+        result.assertTasksScheduled(":a:one")
         fixture.assertProjectsConfigured(":", ":a")
 
         when:
@@ -430,11 +503,13 @@ allprojects {
         run(":a:one", "-x", "two", "-x", "three")
 
         then:
-        result.assertTasksExecuted(":a:one")
-        fixture.assertProjectsConfigured(":", ":b", ":a")
+        result.assertTasksScheduled(":a:one")
+        fixture.assertProjectsConfigured(":", ":a", ":b")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects")
     def "does not configure all projects when excluded task path is not qualified and an exact match for task has already been seen in some sub-project of default project"() {
+        createDirs("a", "b", "c", "c/child")
         settingsFile << "include 'a', 'b', 'c', 'c:child'"
         file('c').mkdirs()
         buildFile << """
@@ -450,7 +525,7 @@ project(':b') {
         run(":a:one", "-x", "two")
 
         then:
-        result.assertTasksExecuted(":a:one")
+        result.assertTasksScheduled(":a:one")
         fixture.assertProjectsConfigured(":", ":a")
 
         when:
@@ -458,11 +533,23 @@ project(':b') {
         runAndFail(":a:one", "-x", "two")
 
         then:
-        failure.assertHasDescription("Task 'two' not found in project ':c'.")
-        fixture.assertProjectsConfigured(":", ":c", ':c:child')
+        failureDescriptionContains("Task 'two' not found in project ':c' and its subprojects.")
+        fixture.assertProjectsConfigured(":", ":a", ":c", ':c:child')
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Invocation:Task not found'
+            definition.id.displayName == 'Task not found'
+            contextualLabel == "Task 'two' not found in project ':c' and its subprojects."
+            details == null
+            solutions == []
+            additionalData.asMap == ['requestedPath': 'two']
+            originLocations == []
+        }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects")
     def "configures all subprojects of default project when excluded task path is not qualified and an exact match not found in default project"() {
+        createDirs("a", "b", "c", "c/child")
         settingsFile << "include 'a', 'b', 'c', 'c:child'"
         file('c').mkdirs()
         buildFile << """
@@ -476,7 +563,7 @@ allprojects {
         run(":a:one", "-x", "two")
 
         then:
-        result.assertTasksExecuted(":a:one")
+        result.assertTasksScheduled(":a:one")
         fixture.assertProjectsConfigured(":", ":a", ":b", ":c", ":c:child")
 
         when:
@@ -484,11 +571,23 @@ allprojects {
         runAndFail(":a:one", "-x", "two")
 
         then:
-        failure.assertHasDescription("Task 'two' not found in project ':c'.")
-        fixture.assertProjectsConfigured(":", ":c", ':c:child')
+        failureDescriptionContains("Task 'two' not found in project ':c' and its subprojects.")
+        fixture.assertProjectsConfigured(":", ":a", ":c", ':c:child')
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Invocation:Task not found'
+            definition.id.displayName == 'Task not found'
+            contextualLabel == "Task 'two' not found in project ':c' and its subprojects."
+            details == null
+            solutions == []
+            additionalData.asMap == ['requestedPath': 'two']
+            originLocations == []
+        }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects")
     def "configures all subprojects of default projects when excluded task path is not qualified and uses camel case matching"() {
+        createDirs("a", "b", "b/child", "c")
         settingsFile << "include 'a', 'b', 'b:child', 'c'"
         file('b').mkdirs()
         buildFile << """
@@ -502,7 +601,7 @@ allprojects {
         run(":a:one", "-x", "tw")
 
         then:
-        result.assertTasksExecuted(":a:one")
+        result.assertTasksScheduled(":a:one")
         fixture.assertProjectsConfigured(":", ":a", ":b", ":c", ":b:child")
 
         when:
@@ -510,31 +609,47 @@ allprojects {
         run(":a:one", "-x", "tw")
 
         then:
-        result.assertTasksExecuted(":a:one")
-        fixture.assertProjectsConfigured(":", ":b", ":b:child", ":a")
+        result.assertTasksScheduled(":a:one")
+        fixture.assertProjectsConfigured(":", ":a", ":b", ":b:child")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "reaches out to a property of the parent project")
     def "extra properties defined in parent project are accessible to child"() {
+        createDirs("a", "a/child")
         settingsFile << "include 'a', 'a:child'"
-        file('a/build.gradle') << """
-ext.foo = "Moo!!!"
-"""
-        file('a/child/build.gradle') << """
-task printExt {
-    doLast {
-        println "The Foo says " + foo
-    }
-}
-"""
+        buildFile('a/build.gradle', """
+            ext.foo = "Moo!!!"
+        """)
+        buildFile('a/child/build.gradle', """
+            task printExt {
+                def foo = foo
+                doLast {
+                    println "The Foo says " + foo
+                }
+            }
+        """)
+        executer.expectDocumentedDeprecationWarning("Implicit lookup of properties in parent projects has been deprecated. " +
+            "This will fail with an error in Gradle 10. " +
+            "Property 'foo' was not declared in project ':a:child' and was resolved from project ':a'. " +
+            "This lookup was initiated by a dynamic invocation in the build script. " +
+            "Consult the upgrading guide for further information: " +
+            "https://docs.gradle.org/current/userguide/upgrading_version_9.html#deprecated_implicit_lookup_in_parent_projects")
+
         when:
         run(":a:child:printExt")
 
         then:
         outputContains("The Foo says Moo!!!")
+        receivedProblems.size().times { i ->
+            verifyAll(receivedProblem(i)) {
+                fqid == 'Gradle:Deprecation:Implicit lookup of properties in parent projects'
+            }
+        }
     }
 
-    @ToBeFixedForConfigurationCache(because = "runs the dependencies task")
+    @ToBeFixedForConfigurationCache(because = "test expects configuration phase on second run")
     @Issue("https://github.com/gradle/gradle/issues/18460")
+    @IntegrationTestTimeout(value = 60, onlyIf = { IntegrationTestBuildContext.embedded })
     def "can query dependencies with configure on demand enabled"() {
         def subprojects = ["a", "b"]
         multiProjectBuild("outputRegistry", subprojects)

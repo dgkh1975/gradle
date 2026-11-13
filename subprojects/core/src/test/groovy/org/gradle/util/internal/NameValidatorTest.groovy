@@ -18,27 +18,31 @@ package org.gradle.util.internal
 import org.gradle.api.DefaultTask
 import org.gradle.api.InvalidUserDataException
 import org.gradle.api.internal.CollectionCallbackActionDecorator
-import org.gradle.api.internal.DocumentationRegistry
-import org.gradle.api.internal.DomainObjectContext
 import org.gradle.api.internal.GradleInternal
+import org.gradle.api.internal.artifacts.ConfigurationResolver
+import org.gradle.api.internal.artifacts.DependencyManagementInstanceIdentity
 import org.gradle.api.internal.artifacts.configurations.DefaultConfigurationContainer
+import org.gradle.api.internal.artifacts.configurations.DefaultConfigurationFactory
+import org.gradle.api.internal.artifacts.configurations.ResolutionStrategyFactory
 import org.gradle.api.internal.artifacts.type.DefaultArtifactTypeContainer
-import org.gradle.api.internal.file.FileCollectionFactory
 import org.gradle.api.internal.file.TestFiles
+import org.gradle.api.internal.project.ProjectIdentity
 import org.gradle.api.internal.project.ProjectInternal
 import org.gradle.api.internal.project.taskfactory.TaskFactory
+import org.gradle.api.internal.project.taskfactory.TaskIdentityFactory
 import org.gradle.api.internal.project.taskfactory.TaskInstantiator
 import org.gradle.api.internal.tasks.DefaultSourceSetContainer
-import org.gradle.internal.event.ListenerManager
+import org.gradle.internal.Describables
+import org.gradle.internal.code.UserCodeApplicationContext
+import org.gradle.internal.id.ConfigurationCacheableIdFactory
 import org.gradle.internal.instantiation.InstantiationScheme
-import org.gradle.nativeplatform.internal.DefaultFlavorContainer
+import org.gradle.internal.model.DomainObjectContext
 import org.gradle.util.AttributeTestUtil
 import org.gradle.util.Path
 import org.gradle.util.TestUtil
 import spock.lang.Shared
 import spock.lang.Specification
 import spock.lang.Subject
-import spock.lang.Unroll
 
 @Subject(NameValidator)
 class NameValidatorTest extends Specification {
@@ -49,26 +53,26 @@ class NameValidatorTest extends Specification {
     @Shared
     def domainObjectContainersWithValidation = [
         ["artifact types", new DefaultArtifactTypeContainer(TestUtil.instantiatorFactory().decorateLenient(), AttributeTestUtil.attributesFactory(), CollectionCallbackActionDecorator.NOOP)],
-        ["configurations", new DefaultConfigurationContainer(null, TestUtil.instantiatorFactory().decorateLenient(), domainObjectContext(), Mock(ListenerManager), null, null, Mock(FileCollectionFactory), null, null, null, null, null, AttributeTestUtil.attributesFactory(), null, null, null, null, null, Stub(DocumentationRegistry), CollectionCallbackActionDecorator.NOOP, null, null, TestUtil.domainObjectCollectionFactory(), null, TestUtil.objectFactory())],
-        ["flavors", new DefaultFlavorContainer(TestUtil.instantiatorFactory().decorateLenient(), CollectionCallbackActionDecorator.NOOP)],
-        ["source sets", new DefaultSourceSetContainer(TestFiles.resolver(), null, TestUtil.instantiatorFactory().decorateLenient(), TestUtil.objectFactory(), CollectionCallbackActionDecorator.NOOP)]
+        ["configurations", new DefaultConfigurationContainer(TestUtil.instantiatorFactory().decorateLenient(), CollectionCallbackActionDecorator.NOOP, DomainObjectContext.NONE, new DependencyManagementInstanceIdentity(Describables.of("unknown")), Mock(DefaultConfigurationFactory), Mock(ResolutionStrategyFactory), TestUtil.problemsService(), Mock(ConfigurationResolver.Factory), AttributeTestUtil.mutableSchema())],
+        ["source sets", new DefaultSourceSetContainer(TestFiles.resolver(), TestFiles.taskDependencyFactory(), null, TestUtil.instantiatorFactory().decorateLenient(), TestUtil.objectFactory(), CollectionCallbackActionDecorator.NOOP)]
     ]
 
     def cleanup() {
         IncubationLogger.reset()
     }
 
-    @Unroll
     def "tasks are not allowed to be named '#name'"() {
         when:
         def project = Mock(ProjectInternal) {
-            projectPath(_) >> Path.path(":foo:bar")
-            identityPath(_) >> Path.path("build:foo:bar")
+            getProjectIdentity() >> ProjectIdentity.forSubproject(
+                Path.path(":build"),
+                Path.path(":foo:bar")
+            )
             getGradle() >> Mock(GradleInternal) {
                 getIdentityPath() >> Path.path(":build:foo:bar")
             }
         }
-        new TaskInstantiator(new TaskFactory(project, Mock(InstantiationScheme)), project).create(name, DefaultTask)
+        new TaskInstantiator(new TaskIdentityFactory(new ConfigurationCacheableIdFactory()), new TaskFactory(project, Mock(InstantiationScheme)), project, Mock(UserCodeApplicationContext)).create(name, DefaultTask)
 
         then:
         def exception = thrown(InvalidUserDataException)
@@ -78,7 +82,6 @@ class NameValidatorTest extends Specification {
         name << invalidNames
     }
 
-    @Unroll
     def "#objectType are not allowed to be named '#name'"() {
         when:
         domainObjectContainer.create(name)
@@ -101,12 +104,6 @@ class NameValidatorTest extends Specification {
         then:
         def exception = thrown(InvalidUserDataException)
         assertForbidden(name, exception.getMessage())
-    }
-
-    private DomainObjectContext domainObjectContext() {
-        def mock = Mock(DomainObjectContext)
-        mock.projectPath(_) >> Mock(Path)
-        mock
     }
 
     void assertForbidden(name, message) {

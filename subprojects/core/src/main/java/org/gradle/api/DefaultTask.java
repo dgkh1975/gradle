@@ -33,6 +33,7 @@ import org.gradle.api.tasks.TaskDestroyables;
 import org.gradle.api.tasks.TaskLocalState;
 import org.gradle.internal.extensibility.NoConventionMapping;
 import org.gradle.work.DisableCachingByDefault;
+import org.jspecify.annotations.Nullable;
 
 import java.io.File;
 import java.time.Duration;
@@ -41,15 +42,17 @@ import java.util.Set;
 
 /**
  * {@code DefaultTask} is the standard {@link Task} implementation. You can extend this to implement your own task types.
+ * @since 0.7
  */
 @NoConventionMapping
 @SuppressWarnings("deprecation")
 @DisableCachingByDefault(because = "Gradle would require more information to cache this task")
-public class DefaultTask extends org.gradle.api.internal.AbstractTask implements Task {
+public abstract class DefaultTask extends org.gradle.api.internal.AbstractTask implements Task {
     // NOTE: These methods are duplicated here because Eclipse treats methods implemented in the deprecated
     // AbstractTask as also deprecated in DefaultTask.
 
     @Override
+    @Deprecated
     public AntBuilder getAnt() {
         return super.getAnt();
     }
@@ -90,8 +93,18 @@ public class DefaultTask extends org.gradle.api.internal.AbstractTask implements
     }
 
     @Override
+    public void onlyIf(String onlyIfReason, Spec<? super Task> spec) {
+        super.onlyIf(onlyIfReason, spec);
+    }
+
+    @Override
     public void setOnlyIf(Spec<? super Task> spec) {
         super.setOnlyIf(spec);
+    }
+
+    @Override
+    public void setOnlyIf(String onlyIfReason, Spec<? super Task> spec) {
+        super.setOnlyIf(onlyIfReason, spec);
     }
 
     @Override
@@ -170,22 +183,24 @@ public class DefaultTask extends org.gradle.api.internal.AbstractTask implements
     }
 
     @Override
+    @Nullable
     public String getDescription() {
         return super.getDescription();
     }
 
     @Override
-    public void setDescription(String description) {
+    public void setDescription(@Nullable String description) {
         super.setDescription(description);
     }
 
     @Override
+    @Nullable
     public String getGroup() {
         return super.getGroup();
     }
 
     @Override
-    public void setGroup(String group) {
+    public void setGroup(@Nullable String group) {
         super.setGroup(group);
     }
 

@@ -15,9 +15,10 @@
  */
 package org.gradle.internal.exceptions;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.gradle.groovy.scripts.ScriptSource;
 import org.gradle.internal.scan.UsedByScanPlugin;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A {@code LocationAwareException} is an exception which can be annotated with a location in a script.
@@ -31,7 +32,7 @@ public class LocationAwareException extends ContextAwareException implements Fai
         this(cause, source != null ? source.getDisplayName() : null, lineNumber);
     }
 
-    public LocationAwareException(Throwable cause, String sourceDisplayName, Integer lineNumber) {
+    public LocationAwareException(Throwable cause, @Nullable String sourceDisplayName, @Nullable Integer lineNumber) {
         super(cause);
         this.sourceDisplayName = sourceDisplayName;
         this.lineNumber = lineNumber;
@@ -40,8 +41,9 @@ public class LocationAwareException extends ContextAwareException implements Fai
     /**
      * <p>Returns the display name of the script where this exception occurred.</p>
      *
-     * @return The source display name. May return null.
+     * @return The source display name.
      */
+    @Nullable
     public String getSourceDisplayName() {
         return sourceDisplayName;
     }
@@ -49,8 +51,9 @@ public class LocationAwareException extends ContextAwareException implements Fai
     /**
      * <p>Returns a description of the location of where this exception occurred.</p>
      *
-     * @return The location description. May return null.
+     * @return The location description.
      */
+    @Nullable
     public String getLocation() {
         if (sourceDisplayName == null) {
             return null;
@@ -67,6 +70,7 @@ public class LocationAwareException extends ContextAwareException implements Fai
      *
      * @return The line number, or null if not known.
      */
+    @Nullable
     public Integer getLineNumber() {
         return lineNumber;
     }
@@ -76,6 +80,7 @@ public class LocationAwareException extends ContextAwareException implements Fai
      *
      * @return the message. May return null.
      */
+    @Nullable
     @Override
     public String getMessage() {
         String location = getLocation();
@@ -97,15 +102,6 @@ public class LocationAwareException extends ContextAwareException implements Fai
         if (getCause() instanceof FailureResolutionAware) {
             FailureResolutionAware resolutionAware = (FailureResolutionAware) getCause();
             resolutionAware.appendResolutions(context);
-        }
-    }
-
-    @Override
-    public void accept(ExceptionContextVisitor contextVisitor) {
-        super.accept(contextVisitor);
-        String location = getLocation();
-        if (location != null) {
-            contextVisitor.visitLocation(location);
         }
     }
 }

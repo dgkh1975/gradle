@@ -16,30 +16,25 @@
 package org.gradle.api.internal.project;
 
 import org.gradle.api.Project;
-import org.gradle.api.artifacts.component.BuildIdentifier;
 import org.gradle.api.artifacts.component.ProjectComponentIdentifier;
-import org.gradle.initialization.DefaultProjectDescriptor;
-import org.gradle.internal.Factory;
+import org.gradle.initialization.ProjectDescriptorRegistry;
+import org.gradle.internal.build.BuildIdentity;
 import org.gradle.internal.build.BuildProjectRegistry;
 import org.gradle.internal.build.BuildState;
-import org.gradle.internal.service.scopes.Scopes;
+import org.gradle.internal.project.ImmutableProjectDescriptor;
+import org.gradle.internal.service.scopes.Scope;
 import org.gradle.internal.service.scopes.ServiceScope;
+import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
 
 import javax.annotation.concurrent.ThreadSafe;
-import java.util.Collection;
-import java.util.function.Consumer;
 
 /**
  * A registry of all projects present in a build tree.
  */
 @ThreadSafe
-@ServiceScope(Scopes.BuildTree.class)
-public interface ProjectStateRegistry {
-    /**
-     * Returns all projects in the build tree.
-     */
-    Collection<? extends ProjectState> getAllProjects();
-
+@ServiceScope(Scope.BuildTree.class)
+public interface ProjectStateRegistry extends ProjectStateLookup {
     /**
      * Locates the state object that owns the given public project model. Can use {@link ProjectInternal#getOwner()} instead.
      */
@@ -51,38 +46,33 @@ public interface ProjectStateRegistry {
     ProjectState stateFor(ProjectComponentIdentifier identifier) throws IllegalArgumentException;
 
     /**
+     * Locates the state object that owns the project with the identity path.
+     */
+    ProjectState stateFor(Path identityPath) throws IllegalArgumentException;
+
+    /**
      * Locates the state objects for all projects of the given build.
      */
-    BuildProjectRegistry projectsFor(BuildIdentifier buildIdentifier) throws IllegalArgumentException;
+    BuildProjectRegistry projectsFor(BuildIdentity buildIdentity) throws IllegalArgumentException;
+
+    /**
+     * Locates the state objects for all projects of the given build, or {@code null} if these are not available yet.
+     */
+    @Nullable
+    BuildProjectRegistry findProjectsFor(BuildIdentity buildIdentity);
 
     /**
      * Registers the projects of a build.
      */
-    void registerProjects(BuildState build, ProjectRegistry<DefaultProjectDescriptor> projectRegistry);
+    void registerProjects(BuildState owner, ProjectDescriptorRegistry projectRegistry);
 
     /**
      * Registers a single project.
      */
-    ProjectState registerProject(BuildState owner, DefaultProjectDescriptor projectDescriptor);
+    ProjectState registerProject(BuildState owner, ImmutableProjectDescriptor projectDescriptor);
 
     /**
-     * Allows a section of code to run against the mutable state of all projects. No other thread will be able to access the state of any project while the given action is running.
-     *
-     * <p>Any attempt to lock a project by some other thread will block while the given action is running. This includes calls to {@link ProjectState#applyToMutableState(Consumer)}.
+     * Discards all projects for the given build.
      */
-    void withMutableStateOfAllProjects(Runnable runnable);
-
-    /**
-     * Allows a section of code to run against the mutable state of all projects. No other thread will be able to access the state of any project while the given action is running.
-     *
-     * <p>Any attempt to lock a project by some other thread will block while the given action is running. This includes calls to {@link ProjectState#applyToMutableState(Consumer)}.
-     */
-    <T> T withMutableStateOfAllProjects(Factory<T> factory);
-
-    /**
-     * Allows the given code to access the mutable state of any project, regardless of which other threads may be accessing the project.
-     *
-     * DO NOT USE THIS METHOD. It is here to allow some very specific backwards compatibility.
-     */
-    <T> T allowUncontrolledAccessToAnyProject(Factory<T> factory);
+    void discardProjectsFor(BuildState build);
 }

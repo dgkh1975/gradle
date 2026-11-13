@@ -15,28 +15,28 @@
  */
 package org.gradle.internal.management;
 
-import org.gradle.api.artifacts.dsl.ComponentMetadataHandler;
 import org.gradle.api.initialization.dsl.VersionCatalogBuilder;
 import org.gradle.api.initialization.resolve.DependencyResolutionManagement;
 import org.gradle.api.initialization.resolve.RepositoriesMode;
 import org.gradle.api.initialization.resolve.RulesMode;
 import org.gradle.api.internal.project.ProjectInternal;
 import org.gradle.api.provider.Property;
+import org.gradle.internal.FinalizableValue;
+import org.gradle.internal.service.scopes.Scope;
+import org.gradle.internal.service.scopes.ServiceScope;
 
 import java.util.List;
 
-public interface DependencyResolutionManagementInternal extends DependencyResolutionManagement {
+@ServiceScope(Scope.Build.class)
+public interface DependencyResolutionManagementInternal extends DependencyResolutionManagement, FinalizableValue {
 
     void configureProject(ProjectInternal project);
-
-    void preventFromFurtherMutation();
-
-    void applyRules(ComponentMetadataHandler target);
 
     RepositoriesModeInternal getConfiguredRepositoriesMode();
 
     RulesModeInternal getConfiguredRulesMode();
 
+    @Override
     Property<String> getDefaultProjectsExtensionName();
 
     List<VersionCatalogBuilder> getDependenciesModelBuilders();

@@ -16,7 +16,6 @@
 
 package org.gradle.plugin.use;
 
-import org.gradle.api.Incubating;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.provider.ProviderConvertible;
 
@@ -26,14 +25,14 @@ import org.gradle.api.provider.ProviderConvertible;
  * In a build script, the <code>plugins {}</code> script block API is of this type.
  * That is, you can use this API in the body of the plugins script block to declare plugins to be used for the script.
  * </p>
- * <h3>Relationship with the apply() method</h3>
+ * <h2>Relationship with the apply() method</h2>
  * <p>
  * The <code>plugins {}</code> block serves a similar purpose to the {@link org.gradle.api.plugins.PluginAware#apply(java.util.Map)} method
  * that can be used to apply a plugin directly to a {@code Project} object or similar.
  * A key difference is that plugins applied via the <code>plugins {}</code> block are conceptually applied to the script, and by extension the script target.
  * At this time there is no observable practical difference between the two approaches with regard to the end result.
  * </p>
- * <h3>Strict Syntax</h3>
+ * <h2>Strict Syntax</h2>
  * <p>
  * When used in a build script, the <code>plugins {}</code> block only allows a strict subset of the full build script programming language.
  * Only the API of this type can be used, and values must be literal (e.g. constant strings, not variables).
@@ -45,13 +44,13 @@ import org.gradle.api.provider.ProviderConvertible;
  * This implies the following constraints:
  * </p>
  * <ul>
- * <li>Only {@link #id(String)} method calls may be top level statements</li>
+ * <li>Only {@link #id(String)}, {@link #alias(Provider)}, and {@link #alias(ProviderConvertible)} method calls may be top level statements</li>
  * <li>{@link #id(String)} calls may only be followed by a {@link PluginDependencySpec#version(String)} and/or {@link PluginDependencySpec#apply(boolean)} method call on the returned object</li>
  * <li>{@link #id(String)}, {@link PluginDependencySpec#version(String)} and {@link PluginDependencySpec#apply(boolean)} methods must be called with a literal argument (i.e. not a variable)</li>
  * <li>The <code>plugins {}</code> script block must follow any <code>buildscript {}</code> script block, but must precede all other logic in the script</li>
  * </ul>
- * <h3>Available Plugins</h3>
- * <h4>Core Plugins</h4>
+ * <h2>Available Plugins</h2>
+ * <h3>Core Plugins</h3>
  * <p>
  * Core Gradle plugins are able to be applied using the <code>plugins {}</code> block.
  * Core plugins must be specified without a version number, and can have a <i>qualified</i> or <i>unqualified</i> id.
@@ -76,7 +75,7 @@ import org.gradle.api.provider.ProviderConvertible;
  * <p>
  * For the list of available core plugins for a particular Gradle version, please consult the user manual.
  * </p>
- * <h4>Community Plugins</h4>
+ * <h3>Community Plugins</h3>
  * <p>
  * Non-core plugins are available from the <a href="http://plugins.gradle.org">Gradle Plugin Portal</a>.
  * These plugins are contributed by users of Gradle to extend Gradle's functionality.
@@ -85,7 +84,7 @@ import org.gradle.api.provider.ProviderConvertible;
  * <p>
  * To use a community plugin, the fully qualified id must be specified along with a version.
  * </p>
- * <h3>Settings Script Usage</h3>
+ * <h2>Settings Script Usage</h2>
  * <p>
  * When used in a settings script, this API sets the default version of a plugin, allowing build scripts to
  * reference a plugin id without an associated version.
@@ -95,6 +94,7 @@ import org.gradle.api.provider.ProviderConvertible;
  * arbitrary code, and version Strings may contain property replacements. It is an error to call the `apply` method
  * with a value other than `false` (the default).
  * </p>
+ * @since 2.0
  */
 public interface PluginDependenciesSpec {
 
@@ -125,6 +125,7 @@ public interface PluginDependenciesSpec {
      *
      * @param id the id of the plugin to depend on
      * @return a mutable plugin dependency specification that can be used to further refine the dependency
+     * @since 2.0
      */
     PluginDependencySpec id(String id);
 
@@ -137,8 +138,14 @@ public interface PluginDependenciesSpec {
      *
      * @since 7.2
      */
-    @Incubating
-    PluginDependencySpec alias(Provider<PluginDependency> notation);
+    default PluginDependencySpec alias(Provider<PluginDependency> notation) {
+        PluginDependency pluginDependency = notation.get();
+        if (pluginDependency.getVersion().getRequiredVersion().isEmpty()) {
+            return id(pluginDependency.getPluginId());
+        } else {
+            return id(pluginDependency.getPluginId()).version(pluginDependency.getVersion().getRequiredVersion());
+        }
+    }
 
     /**
      * Adds a plugin dependency using a notation coming from a version catalog.
@@ -149,7 +156,8 @@ public interface PluginDependenciesSpec {
      *
      * @since 7.3
      */
-    @Incubating
-    PluginDependencySpec alias(ProviderConvertible<PluginDependency> notation);
+    default PluginDependencySpec alias(ProviderConvertible<PluginDependency> notation) {
+        return alias(notation.asProvider());
+    }
 
 }

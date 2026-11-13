@@ -17,9 +17,7 @@
 package org.gradle.api.internal.changedetection.state
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
 import org.gradle.internal.Actions
-import spock.lang.Unroll
 
 class TaskCustomTypesInputPropertyIntegrationTest extends AbstractIntegrationSpec {
     String customSerializableType() {
@@ -306,7 +304,7 @@ task someTask(type: SomeTask) {
         skipped(":someTask")
     }
 
-    def "using a custom type with non-deterministic serialized form is deprecated"() {
+    def "using a custom type with non-deterministic serialized form causes to be out of date"() {
         file("buildSrc/src/main/java/CustomType.java") << customSerializableTypeWithNonDeterministicSerializedForm()
         buildFile << """
 task someTask {
@@ -329,15 +327,10 @@ task someTask {
         // Change to "equal" value
         when:
         buildFile.replace('new CustomType("value1")', 'new CustomType("value1 ignore me")')
-        executer.expectDocumentedDeprecationWarning("Using objects as inputs that have a different serialized form but are equal has been deprecated. " +
-            "This is scheduled to be removed in Gradle 8.0. " +
-            "Type 'CustomType' has a custom implementation for equals(). " +
-            "Declare the property as @Nested instead to expose its properties as inputs. " +
-            "See https://docs.gradle.org/current/userguide/upgrading_version_7.html#equals_up_to_date_deprecation for more details.")
         run "someTask"
 
         then:
-        skipped(":someTask")
+        executedAndNotSkipped(":someTask")
 
         // Change to different value
         when:
@@ -356,32 +349,30 @@ task someTask {
         skipped(":someTask")
     }
 
-    @Unroll
-    @ToBeFixedForConfigurationCache(because = "ClassNotFoundException: ArrayList1_groovyProxy", iterationMatchers = '.*\\[type: Map, #2\\]$')
-    def "task can take as input a collection of custom types from various sources"() {
+    def "task can take as input a collection of custom types from various sources (#type)"() {
         def buildSrcType = file("buildSrc/src/main/java/CustomType.java")
         buildSrcType << customSerializableType()
         def otherScript = file("other.gradle")
         otherScript << """
-class ScriptPluginType extends CustomType {
-    ScriptPluginType(String value) { super(value) }
-}
-ext.pluginValue = new ScriptPluginType("abc")
-"""
+            class ScriptPluginType extends CustomType {
+                ScriptPluginType(String value) { super(value) }
+            }
+            ext.pluginValue = new ScriptPluginType("abc")
+        """
 
         buildFile << """
-class ScriptType extends CustomType {
-    ScriptType(String value) { super(value) }
-}
-
-apply from: 'other.gradle'
-
-task someTask {
-    inputs.property("v", [new CustomType('123'), new ScriptType('abc'), pluginValue] as $type)
-    outputs.file file("build/out")
-    doLast ${Actions.name}.doNothing()
-}
-"""
+            class ScriptType extends CustomType {
+                ScriptType(String value) { super(value) }
+            }
+            
+            apply from: 'other.gradle'
+            
+            task someTask {
+                inputs.property("v", ${typeConvert("[new CustomType('123'), new ScriptType('abc'), pluginValue]")})
+                outputs.file file("build/out")
+                doLast ${Actions.name}.doNothing()
+            }
+        """
 
         given:
         run "someTask"
@@ -394,7 +385,7 @@ task someTask {
 
         // Change the values of the property
         when:
-        buildFile.replace("[new CustomType('123'), new ScriptType('abc'), pluginValue] as $type", "[new CustomType('abc'), new ScriptType('123'), pluginValue] as $type")
+        buildFile.replace("[new CustomType('123'), new ScriptType('abc'), pluginValue]", "[new CustomType('abc'), new ScriptType('123'), pluginValue]")
 
         and:
         executer.withArgument("-i")
@@ -429,12 +420,12 @@ task someTask {
         skipped(":someTask")
 
         where:
-        type           | _
-        "List"         | _
-        "Set"          | _
-        "Map"          | _
-        "Object[]"     | _
-        "CustomType[]" | _
+        type           | typeConvert
+        "List"         | { "$it as List" }
+        "Set"          | { "$it as Set" }
+        "Map"          | { "${it}.collectEntries { [it, it] }" }
+        "Object[]"     | { "$it as Object[]" }
+        "CustomType[]" | { "$it as CustomType[]" }
     }
 
 }

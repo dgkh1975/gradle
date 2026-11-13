@@ -16,8 +16,9 @@
 
 package org.gradle.integtests.composite.plugins
 
-
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.RepoScriptBlockUtil
+import org.gradle.test.fixtures.dsl.GradleDsl
 import org.gradle.test.fixtures.file.TestFile
 
 abstract class AbstractPluginBuildIntegrationTest extends AbstractIntegrationSpec {
@@ -62,7 +63,7 @@ abstract class AbstractPluginBuildIntegrationTest extends AbstractIntegrationSpe
                     $pluginPluginId
                 }
                 repositories {
-                    gradlePluginPortal()
+                    ${RepoScriptBlockUtil.gradlePluginRepositoryDefinition(useKotlinDSL ? GradleDsl.KOTLIN : GradleDsl.GROOVY)}
                 }
             """
             settingsPluginFile = file("$buildName/src/main/$sourceDirectory/${settingsPluginId}.settings${fileExtension}")
@@ -175,7 +176,9 @@ abstract class AbstractPluginBuildIntegrationTest extends AbstractIntegrationSpe
                 }
             }
         """
+
         executer.inDirectory(file("plugin")).withTasks("publish").run()
+
         file("plugin").forceDeleteDir()
         mavenRepo.module("com.example", "plugin", "1.0").assertPublished()
     }

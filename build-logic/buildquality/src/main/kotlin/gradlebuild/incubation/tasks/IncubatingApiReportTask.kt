@@ -2,7 +2,9 @@ package gradlebuild.incubation.tasks
 
 import gradlebuild.incubation.action.IncubatingApiReportWorkAction
 import org.gradle.api.DefaultTask
+import org.gradle.api.artifacts.VersionCatalogsExtension
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.ProjectLayout
 import org.gradle.api.file.RegularFileProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
@@ -13,14 +15,27 @@ import org.gradle.api.tasks.OutputFile
 import org.gradle.api.tasks.PathSensitive
 import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
-import org.gradle.kotlin.dsl.submit
+// Using star import to workaround https://youtrack.jetbrains.com/issue/KTIJ-24390
+import org.gradle.kotlin.dsl.*
 import org.gradle.workers.WorkerExecutor
-
 import javax.inject.Inject
 
 
 @CacheableTask
 abstract class IncubatingApiReportTask : DefaultTask() {
+
+    private val additionalClasspath = project.objects.fileCollection().apply {
+        val libs = project.the<VersionCatalogsExtension>().named("buildLibs")
+        from(
+            project.configurations.detachedConfiguration(
+                project.dependencies.create(libs.findLibrary("kotlinCompilerEmbeddable").get().get().copy().apply {
+                    version {
+                        strictly(embeddedKotlinVersion)
+                    }
+                }),
+            )
+        )
+    }
 
     @get:InputFile
     @get:PathSensitive(PathSensitivity.RELATIVE)
@@ -46,12 +61,16 @@ abstract class IncubatingApiReportTask : DefaultTask() {
     @get:Inject
     abstract val workerExecutor: WorkerExecutor
 
+    @get:Inject
+    abstract val layout: ProjectLayout
+
     @TaskAction
-    fun analyze() = workerExecutor.noIsolation().submit(IncubatingApiReportWorkAction::class) {
+    fun analyze() = workerExecutor.processIsolation { classpath.from(additionalClasspath) }.submit(IncubatingApiReportWorkAction::class) {
+        repositoryRoot = layout.settingsDirectory
         srcDirs.from(this@IncubatingApiReportTask.sources)
-        htmlReportFile.set(this@IncubatingApiReportTask.htmlReportFile)
-        textReportFile.set(this@IncubatingApiReportTask.textReportFile)
-        title.set(this@IncubatingApiReportTask.title)
-        releasedVersionsFile.set(this@IncubatingApiReportTask.releasedVersionsFile)
+        htmlReportFile = this@IncubatingApiReportTask.htmlReportFile
+        textReportFile = this@IncubatingApiReportTask.textReportFile
+        title = this@IncubatingApiReportTask.title
+        releasedVersionsFile = this@IncubatingApiReportTask.releasedVersionsFile
     }
 }

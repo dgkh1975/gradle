@@ -18,16 +18,18 @@ package org.gradle.configuration.internal;
 
 import com.google.common.collect.ImmutableSet;
 import groovy.lang.Closure;
-import org.apache.commons.lang.ClassUtils;
+import org.apache.commons.lang3.ClassUtils;
 import org.gradle.BuildListener;
 import org.gradle.api.Action;
 import org.gradle.api.ProjectEvaluationListener;
 import org.gradle.api.execution.TaskExecutionGraphListener;
 import org.gradle.internal.InternalListener;
 import org.gradle.internal.UncheckedException;
+import org.gradle.internal.code.UserCodeApplicationContext;
+import org.gradle.internal.code.UserCodeApplicationId;
 import org.gradle.internal.operations.BuildOperationContext;
 import org.gradle.internal.operations.BuildOperationDescriptor;
-import org.gradle.internal.operations.BuildOperationExecutor;
+import org.gradle.internal.operations.BuildOperationRunner;
 import org.gradle.internal.operations.RunnableBuildOperation;
 
 import java.lang.reflect.InvocationHandler;
@@ -54,11 +56,11 @@ public class DefaultListenerBuildOperationDecorator implements ListenerBuildOper
         "buildFinished"
     );
 
-    private final BuildOperationExecutor buildOperationExecutor;
+    private final BuildOperationRunner buildOperationRunner;
     private final UserCodeApplicationContext userCodeApplicationContext;
 
-    public DefaultListenerBuildOperationDecorator(BuildOperationExecutor buildOperationExecutor, UserCodeApplicationContext userCodeApplicationContext) {
-        this.buildOperationExecutor = buildOperationExecutor;
+    public DefaultListenerBuildOperationDecorator(BuildOperationRunner buildOperationRunner, UserCodeApplicationContext userCodeApplicationContext) {
+        this.buildOperationRunner = buildOperationRunner;
         this.userCodeApplicationContext = userCodeApplicationContext;
     }
 
@@ -68,8 +70,7 @@ public class DefaultListenerBuildOperationDecorator implements ListenerBuildOper
         if (application == null || action instanceof InternalListener) {
             return action;
         }
-        Action<T> decorated = application.reapplyLater(action);
-        return new BuildOperationEmittingAction<>(application.getId(), registrationPoint, decorated);
+        return new BuildOperationEmittingAction<>(application, registrationPoint, action);
     }
 
     @Override
@@ -153,22 +154,22 @@ public class DefaultListenerBuildOperationDecorator implements ListenerBuildOper
 
     private class BuildOperationEmittingAction<T> implements Action<T> {
 
-        private final UserCodeApplicationId applicationId;
+        private final UserCodeApplicationContext.Application application;
         private final String registrationPoint;
         private final Action<T> delegate;
 
-        private BuildOperationEmittingAction(UserCodeApplicationId applicationId, String registrationPoint, Action<T> delegate) {
-            this.applicationId = applicationId;
+        private BuildOperationEmittingAction(UserCodeApplicationContext.Application application, String registrationPoint, Action<T> delegate) {
+            this.application = application;
             this.delegate = delegate;
             this.registrationPoint = registrationPoint;
         }
 
         @Override
         public void execute(final T arg) {
-            buildOperationExecutor.run(new Operation(applicationId, registrationPoint) {
+            buildOperationRunner.run(new Operation(application.getId(), registrationPoint) {
                 @Override
                 public void run(final BuildOperationContext context) {
-                    delegate.execute(arg);
+                    application.reapplyAction(delegate, arg, UserCodeApplicationContext.CodeType.LISTENER);
                     context.setResult(RESULT);
                 }
             });
@@ -190,7 +191,7 @@ public class DefaultListenerBuildOperationDecorator implements ListenerBuildOper
 
         @SuppressWarnings("unused")
         public void doCall(final Object... args) {
-            buildOperationExecutor.run(new Operation(application.getId(), registrationPoint) {
+            buildOperationRunner.run(new Operation(application.getId(), registrationPoint) {
                 @Override
                 public void run(final BuildOperationContext context) {
                     application.reapply(() -> {
@@ -198,7 +199,7 @@ public class DefaultListenerBuildOperationDecorator implements ListenerBuildOper
                         Object[] finalArgs = numClosureArgs < args.length ? Arrays.copyOf(args, numClosureArgs) : args;
                         delegate.call(finalArgs);
                         context.setResult(RESULT);
-                    });
+                    }, UserCodeApplicationContext.CodeType.LISTENER);
                 }
             });
         }
@@ -247,7 +248,7 @@ public class DefaultListenerBuildOperationDecorator implements ListenerBuildOper
                     throw UncheckedException.unwrapAndRethrow(e);
                 }
             } else {
-                buildOperationExecutor.run(new Operation(application.getId(), registrationPoint) {
+                buildOperationRunner.run(new Operation(application.getId(), registrationPoint) {
                     @Override
                     public void run(final BuildOperationContext context) {
                         application.reapply(() -> {
@@ -259,7 +260,7 @@ public class DefaultListenerBuildOperationDecorator implements ListenerBuildOper
                             } catch (Exception e) {
                                 throw UncheckedException.throwAsUncheckedException(e);
                             }
-                        });
+                        }, UserCodeApplicationContext.CodeType.LISTENER);
                     }
                 });
 

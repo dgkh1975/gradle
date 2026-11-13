@@ -17,12 +17,16 @@
 package org.gradle
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.AvailableJavaHomes
+import org.gradle.integtests.fixtures.jvm.JavaToolchainFixture
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.InstalledJdkTestPreconditions
 import spock.lang.Ignore
 import spock.lang.Issue
 
 import static org.gradle.internal.nativeintegration.jansi.JansiBootPathConfigurer.JANSI_LIBRARY_PATH_SYS_PROP
 
-class JansiEndUserIntegrationTest extends AbstractIntegrationSpec {
+class JansiEndUserIntegrationTest extends AbstractIntegrationSpec implements JavaToolchainFixture {
 
     private final static String JANSI_VERSION = '1.11'
 
@@ -87,17 +91,21 @@ class JansiEndUserIntegrationTest extends AbstractIntegrationSpec {
             public class MyClass {}
         """
 
-        succeeds 'compileJava'
+        withInstallations(AvailableJavaHomes.jdk11).succeeds 'compileJava'
 
         then:
         outputContains('Hello World')
     }
 
+    @Requires(InstalledJdkTestPreconditions.Java11HomeAvailable)
     def "groovy compiler uses a different version of Jansi than initialized by Gradle's native services"() {
         when:
         AnnotationProcessorPublisher annotationProcessorPublisher = new AnnotationProcessorPublisher()
         annotationProcessorPublisher.writeSourceFiles()
-        inDirectory(annotationProcessorPublisher.projectDir).withTasks('publish').run()
+        withInstallations(AvailableJavaHomes.jdk11)
+            .inDirectory(annotationProcessorPublisher.projectDir)
+            .withTasks('publish')
+            .run()
 
         then:
         annotationProcessorPublisher.publishedJarFile.isFile()
@@ -123,7 +131,7 @@ class JansiEndUserIntegrationTest extends AbstractIntegrationSpec {
             class MyClass {}
         """
 
-        succeeds 'compileGroovy'
+        withInstallations(AvailableJavaHomes.jdk11).succeeds 'compileGroovy'
 
         then:
         outputContains('Hello World')
@@ -139,11 +147,12 @@ class JansiEndUserIntegrationTest extends AbstractIntegrationSpec {
 
     static String annotationProcessorDependency(File repoDir, String processorDependency) {
         """
-            sourceCompatibility = '1.7'
+            java.toolchain.languageVersion = JavaLanguageVersion.of(11)
+            java.sourceCompatibility = '1.7'
 
             repositories {
                 maven {
-                    url '${repoDir.toURI()}'
+                    url = '${repoDir.toURI()}'
                 }
             }
 
@@ -200,7 +209,8 @@ class JansiEndUserIntegrationTest extends AbstractIntegrationSpec {
 
                 group = '$group'
                 version = '$version'
-                sourceCompatibility = '1.7'
+                java.toolchain.languageVersion = JavaLanguageVersion.of(11)
+                java.sourceCompatibility = '1.7'
 
                 dependencies {
                     implementation 'org.fusesource.jansi:jansi:$JANSI_VERSION'
@@ -215,7 +225,7 @@ class JansiEndUserIntegrationTest extends AbstractIntegrationSpec {
 
                     repositories {
                         maven {
-                            url "\$buildDir/repo"
+                            url = layout.buildDirectory.dir('repo')
                         }
                     }
                 }

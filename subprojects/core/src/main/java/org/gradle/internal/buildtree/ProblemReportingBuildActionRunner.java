@@ -17,29 +17,35 @@
 package org.gradle.internal.buildtree;
 
 import com.google.common.collect.ImmutableList;
+import org.gradle.api.internal.GradleInternal;
 import org.gradle.api.invocation.Gradle;
-import org.gradle.initialization.exception.ExceptionAnalyser;
-import org.gradle.initialization.layout.BuildLayout;
 import org.gradle.internal.InternalBuildAdapter;
+import org.gradle.internal.exception.ExceptionAnalyser;
+import org.gradle.internal.initialization.layout.BuildTreeLocations;
 import org.gradle.internal.invocation.BuildAction;
 import org.gradle.problems.buildtree.ProblemReporter;
+import org.gradle.problems.buildtree.ProblemReporter.ProblemConsumer;
 
 import java.io.File;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.function.Consumer;
 
 public class ProblemReportingBuildActionRunner implements BuildActionRunner {
     private final BuildActionRunner delegate;
     private final ExceptionAnalyser exceptionAnalyser;
-    private final BuildLayout buildLayout;
+    private final BuildTreeLocations buildTreeLocations;
     private final List<? extends ProblemReporter> reporters;
 
-    public ProblemReportingBuildActionRunner(BuildActionRunner delegate, ExceptionAnalyser exceptionAnalyser, BuildLayout buildLayout, List<? extends ProblemReporter> reporters) {
+    public ProblemReportingBuildActionRunner(
+        ExceptionAnalyser exceptionAnalyser,
+        BuildTreeLocations buildTreeLocations,
+        List<? extends ProblemReporter> reporters,
+        BuildActionRunner delegate
+    ) {
         this.delegate = delegate;
         this.exceptionAnalyser = exceptionAnalyser;
-        this.buildLayout = buildLayout;
+        this.buildTreeLocations = buildTreeLocations;
         this.reporters = ImmutableList.sortedCopyOf(Comparator.comparing(ProblemReporter::getId), reporters);
     }
 
@@ -55,7 +61,7 @@ public class ProblemReportingBuildActionRunner implements BuildActionRunner {
 
     private List<Throwable> reportProblems(File rootProjectBuildDir) {
         List<Throwable> failures = new ArrayList<>();
-        Consumer<Throwable> collector = failure -> failures.add(exceptionAnalyser.transform(failure));
+        ProblemConsumer collector = failure -> failures.add(exceptionAnalyser.transform(failure));
         for (ProblemReporter reporter : reporters) {
             try {
                 reporter.report(rootProjectBuildDir, collector);
@@ -75,7 +81,7 @@ public class ProblemReportingBuildActionRunner implements BuildActionRunner {
     }
 
     private File defaultRootBuildDirOf() {
-        return new File(buildLayout.getRootDirectory(), "build");
+        return new File(buildTreeLocations.getBuildTreeRootDirectory(), "build");
     }
 
     private static class RootProjectBuildDirCollectingListener extends InternalBuildAdapter {
@@ -87,7 +93,10 @@ public class ProblemReportingBuildActionRunner implements BuildActionRunner {
 
         @Override
         public void projectsEvaluated(Gradle gradle) {
-            rootProjectBuildDir = gradle.getRootProject().getBuildDir();
+            GradleInternal gradleInternal = (GradleInternal) gradle;
+            rootProjectBuildDir = gradleInternal.getOwner().getRootProject().fromMutableState(rootProject ->
+                rootProject.getLayout().getBuildDirectory().getAsFile().get()
+            );
         }
     }
 }

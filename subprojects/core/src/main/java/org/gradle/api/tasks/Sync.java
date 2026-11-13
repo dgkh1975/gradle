@@ -17,15 +17,19 @@
 package org.gradle.api.tasks;
 
 import org.gradle.api.Action;
+import org.gradle.api.Incubating;
 import org.gradle.api.InvalidUserDataException;
+import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.internal.file.copy.CopyAction;
 import org.gradle.api.internal.file.copy.CopySpecInternal;
 import org.gradle.api.internal.file.copy.DestinationRootCopySpec;
 import org.gradle.api.internal.file.copy.FileCopyAction;
 import org.gradle.api.internal.file.copy.SyncCopyActionDecorator;
+import org.gradle.api.provider.Property;
 import org.gradle.api.tasks.util.PatternFilterable;
 import org.gradle.api.tasks.util.PatternSet;
 import org.gradle.internal.file.Deleter;
+import org.gradle.internal.instrumentation.api.annotations.NotToBeReplacedByLazyProperty;
 import org.gradle.work.DisableCachingByDefault;
 
 import javax.inject.Inject;
@@ -63,11 +67,49 @@ import java.io.File;
  *     }
  * }
  * </pre>
+ * @since 0.9
  */
 @DisableCachingByDefault(because = "Not worth caching")
-public class Sync extends AbstractCopyTask {
+public abstract class Sync extends AbstractCopyTask {
 
     private final PatternFilterable preserveInDestination = new PatternSet();
+
+    /**
+     * Creates a new {@code Sync} task.
+     *
+     * @since 9.9.0
+     */
+    @SuppressWarnings("this-escape")
+    public Sync() {
+        getSkipWhenSourceIsEmpty().convention(true);
+    }
+
+    /**
+     * Whether this task is skipped when its source contains no files and no directories.
+     *
+     * <p>
+     * When this is {@code true}, which is the default, a task with an empty source does not run and its
+     * destination directory is not synchronized. What is left in the destination then depends on whether it is
+     * a build-owned directory: if it is, the destination is cleaned up; otherwise it keeps the files
+     * the source no longer contains.
+     *
+     * <p>
+     * When this is {@code false}, the task always runs its copy action, so an empty source empties the
+     * destination. Note that this task always deletes the entire contents of its destination directory, not
+     * only the files it copied there, except for anything matched by {@link #preserve(Action)}; disabling this
+     * extends that to a source that is empty, including one that is empty by mistake.
+     *
+     * @return whether this task is skipped when its source is empty
+     * @since 9.9.0
+     */
+    @Incubating
+    @Input
+    public abstract Property<Boolean> getSkipWhenSourceIsEmpty();
+
+    @Override
+    boolean shouldSkipWhenSourceIsEmpty() {
+        return getSkipWhenSourceIsEmpty().get();
+    }
 
     @Override
     protected CopyAction createCopyAction() {
@@ -86,20 +128,39 @@ public class Sync extends AbstractCopyTask {
 
     @Override
     protected CopySpecInternal createRootSpec() {
-        return getProject().getObjects().newInstance(DestinationRootCopySpec.class, super.createRootSpec());
+        return getObjectFactory().newInstance(DestinationRootCopySpec.class, super.createRootSpec());
     }
 
     @Override
+    @NotToBeReplacedByLazyProperty(because = "Read-only nested like property")
     public DestinationRootCopySpec getRootSpec() {
         return (DestinationRootCopySpec) super.getRootSpec();
+    }
+
+    /**
+     * The directory to copy files into.
+     * <p>
+     * Setting this property is equivalent to calling {@link #into(Object)} on this task, and reading it reflects
+     * the destination configured through {@link #into(Object)} or {@link #setDestinationDir(File)}.
+     *
+     * @return the destination directory property
+     * @since 9.8.0
+    */
+    @Incubating
+    @Optional
+    @OutputDirectory
+    public DirectoryProperty getDestinationDirectory() {
+        return getRootSpec().getDestinationDirectory();
     }
 
     /**
      * Returns the directory to copy files into.
      *
      * @return The destination dir.
+     * @since 0.9
      */
     @OutputDirectory
+    @NotToBeReplacedByLazyProperty(because = "Superseded by the lazy getDestinationDirectory() property", willBeDeprecated = true)
     public File getDestinationDir() {
         return getRootSpec().getDestinationDir();
     }
@@ -108,6 +169,7 @@ public class Sync extends AbstractCopyTask {
      * Sets the directory to copy files into. This is the same as calling {@link #into(Object)} on this task.
      *
      * @param destinationDir The destination directory. Must not be null.
+     * @since 0.9
      */
     public void setDestinationDir(File destinationDir) {
         into(destinationDir);
@@ -117,10 +179,11 @@ public class Sync extends AbstractCopyTask {
      * Returns the filter that defines which files to preserve in the destination directory.
      *
      * @return the filter defining the files to preserve
-     *
      * @see #getDestinationDir()
+     * @since 3.1
      */
     @Internal
+    @NotToBeReplacedByLazyProperty(because = "Read-only nested like property")
     public PatternFilterable getPreserve() {
         return preserveInDestination;
     }
@@ -130,8 +193,8 @@ public class Sync extends AbstractCopyTask {
      *
      * @param action Action for configuring the preserve filter
      * @return this
-     *
      * @see #getDestinationDir()
+     * @since 3.1
      */
     public Sync preserve(Action<? super PatternFilterable> action) {
         action.execute(preserveInDestination);
@@ -139,7 +202,5 @@ public class Sync extends AbstractCopyTask {
     }
 
     @Inject
-    protected Deleter getDeleter() {
-        throw new UnsupportedOperationException("Decorator takes care of injection");
-    }
+    protected abstract Deleter getDeleter();
 }

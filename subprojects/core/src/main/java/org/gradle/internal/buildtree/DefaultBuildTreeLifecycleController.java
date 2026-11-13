@@ -15,19 +15,29 @@
  */
 package org.gradle.internal.buildtree;
 
+import com.google.common.annotations.VisibleForTesting;
+import org.gradle.api.GradleException;
 import org.gradle.api.internal.GradleInternal;
 import org.gradle.api.internal.SettingsInternal;
-import org.gradle.composite.internal.BuildTreeWorkGraphController;
+import org.gradle.execution.EntryTaskSelector;
 import org.gradle.internal.Describables;
+import org.gradle.internal.Try;
 import org.gradle.internal.build.BuildLifecycleController;
-import org.gradle.internal.build.BuildToolingModelAction;
 import org.gradle.internal.build.ExecutionResult;
+import org.gradle.internal.exceptions.Contextual;
+import org.gradle.internal.exceptions.WorkTypeAware;
 import org.gradle.internal.model.StateTransitionController;
 import org.gradle.internal.model.StateTransitionControllerFactory;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.Callable;
 import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Supplier;
+import java.util.stream.Collectors;
 
 public class DefaultBuildTreeLifecycleController implements BuildTreeLifecycleController {
     private enum State implements StateTransitionController.State {
@@ -35,27 +45,21 @@ public class DefaultBuildTreeLifecycleController implements BuildTreeLifecycleCo
     }
 
     private final BuildLifecycleController buildLifecycleController;
-    private final BuildTreeWorkGraphController taskGraph;
-    private final BuildTreeWorkPreparer workPreparer;
-    private final BuildTreeWorkExecutor workExecutor;
+    private final BuildTreeWorkController workController;
     private final BuildTreeModelCreator modelCreator;
     private final BuildTreeFinishExecutor finishExecutor;
     private final StateTransitionController<State> state;
 
     public DefaultBuildTreeLifecycleController(
         BuildLifecycleController buildLifecycleController,
-        BuildTreeWorkGraphController taskGraph,
-        BuildTreeWorkPreparer workPreparer,
-        BuildTreeWorkExecutor workExecutor,
+        BuildTreeWorkController workController,
         BuildTreeModelCreator modelCreator,
         BuildTreeFinishExecutor finishExecutor,
         StateTransitionControllerFactory controllerFactory
     ) {
         this.buildLifecycleController = buildLifecycleController;
-        this.taskGraph = taskGraph;
-        this.workPreparer = workPreparer;
+        this.workController = workController;
         this.modelCreator = modelCreator;
-        this.workExecutor = workExecutor;
         this.finishExecutor = finishExecutor;
         this.state = controllerFactory.newController(Describables.of("build tree state"), State.NotStarted);
     }
@@ -67,35 +71,83 @@ public class DefaultBuildTreeLifecycleController implements BuildTreeLifecycleCo
 
     @Override
     public void scheduleAndRunTasks() {
-        runBuild(this::doScheduleAndRunTasks);
+        scheduleAndRunTasks(null);
     }
 
     @Override
-    public <T> T fromBuildModel(boolean runTasks, BuildToolingModelAction<? extends T> action) {
+    public void scheduleAndRunTasks(@Nullable EntryTaskSelector selector) {
+        runBuild(() -> workController.scheduleAndRunRequestedTasks(selector));
+    }
+
+    @Override
+    public <T> T fromBuildModel(boolean runTasks, BuildTreeModelAction<? extends T> action) {
         return runBuild(() -> {
-            modelCreator.beforeTasks(action);
-            if (runTasks) {
-                ExecutionResult<Void> result = doScheduleAndRunTasks();
-                if (!result.getFailures().isEmpty()) {
-                    return result.asFailure();
-                }
+            // Run before tasks (the projectsLoaded phase). If it throws, skip tasks and the model action and fail
+            // the build with the thrown failure.
+            ExecutionResult<BuildTreeModelCreatorResult<Void>> beforeTasksResult = runModelAction(() -> modelCreator.beforeTasks(action));
+            if (!beforeTasksResult.isSuccessful()) {
+                return beforeTasksResult.<T>asFailure();
             }
-            T model = modelCreator.fromBuildModel(action);
-            return ExecutionResult.succeeded(model);
+
+            // Run tasks
+            ExecutionResult<Void> taskRunResult = runTasks
+                ? workController.scheduleAndRunRequestedTasks(null)
+                : ExecutionResult.succeeded();
+
+            // Allow the model action to run even if tasks failed
+            ExecutionResult<BuildTreeModelCreatorResult<T>> buildModelResult = runModelAction(() -> modelCreator.fromBuildModel(action));
+
+            // The held failures must still fail the build.
+            return attachCollectedFailures(beforeTasksResult.getValue(), buildModelResult, taskRunResult);
         });
     }
 
-    private ExecutionResult<Void> doScheduleAndRunTasks() {
-        return taskGraph.withNewWorkGraph(graph -> {
-            workPreparer.scheduleRequestedTasks(graph);
-            return workExecutor.execute(graph);
-        });
+    private static <T> ExecutionResult<T> attachCollectedFailures(
+        BuildTreeModelCreatorResult<Void> beforeTasksResult,
+        ExecutionResult<BuildTreeModelCreatorResult<T>> buildModelResult,
+        ExecutionResult<Void> taskRunResult
+    ) {
+        // The client model (or the action failure if fromBuildModel threw), plus task and model builder failures.
+        ExecutionResult<T> modelResult = buildModelResult.isSuccessful()
+            ? ExecutionResult.succeeded(buildModelResult.getValue().getModel())
+            : buildModelResult.asFailure();
+        ExecutionResult<T> buildResult = modelResult.withFailures(taskRunResult);
+
+        // Model builder failures held behind partial results always fail the build. They come from both phases, but
+        // from fromBuildModel only when it produced a result rather than throwing. Both phases can observe the same
+        // failure instance when a cached model is returned for both, so report it only once.
+        List<Throwable> modelBuilderFailures = new ArrayList<>(beforeTasksResult.getModelBuilderFailures());
+        if (buildModelResult.isSuccessful()) {
+            modelBuilderFailures.addAll(buildModelResult.getValue().getModelBuilderFailures());
+        }
+        ExecutionResult<T> result = buildResult.withFailures(ExecutionResult.maybeFailed(modelBuilderFailures.stream().distinct().collect(Collectors.toList())));
+
+        // A configuration failure is surfaced here only when the build isn't failing yet: if tasks were requested,
+        // and task execution fails the build, attaching the collected copy would very likely report the identical exception twice.
+        if (buildResult.isSuccessful()) {
+            List<Throwable> suppressedConfigurationFailures = new ArrayList<>(beforeTasksResult.getConfigurationFailures());
+            suppressedConfigurationFailures.addAll(buildModelResult.getValue().getConfigurationFailures());
+            result = result.withFailures(ExecutionResult.maybeFailed(suppressedConfigurationFailures.stream().distinct().collect(Collectors.toList())));
+        }
+        return result;
+    }
+
+    /**
+     * Runs a phase of the model action (beforeTasks or fromBuildModel), capturing a failure as a build action failure
+     * instead of throwing, so the caller can still fold in any failures collected before it.
+     */
+    @SuppressWarnings("DataFlowIssue")
+    private <T> ExecutionResult<T> runModelAction(Callable<T> phase) {
+        Try<T> result = Try.ofFailable(phase);
+        return result.getFailure().isPresent()
+            ? ExecutionResult.failed(BuildActionExecutionException.wrap(result.getFailure().get()))
+            : ExecutionResult.succeeded(result.get());
     }
 
     @Override
     public <T> T withEmptyBuild(Function<? super SettingsInternal, T> action) {
         return runBuild(() -> {
-            T result = action.apply(buildLifecycleController.getLoadedSettings());
+            T result = buildLifecycleController.withSettings(action);
             return ExecutionResult.succeeded(result);
         });
     }
@@ -116,5 +168,24 @@ public class DefaultBuildTreeLifecycleController implements BuildTreeLifecycleCo
 
             return result.getValue();
         });
+    }
+
+    @NullMarked
+    @Contextual
+    @VisibleForTesting
+    static class BuildActionExecutionException extends GradleException implements WorkTypeAware {
+
+        private BuildActionExecutionException(Throwable cause) {
+            super(cause.getMessage(), cause);
+        }
+
+        @Override
+        public String getWorkType() {
+            return "BuildAction";
+        }
+
+        public static BuildActionExecutionException wrap(Throwable throwable) {
+            return new BuildActionExecutionException(throwable);
+        }
     }
 }

@@ -18,15 +18,17 @@ package org.gradle.api.tasks
 
 import org.gradle.initialization.StartParameterBuildOptions.BuildCacheDebugLoggingOption
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.BuildCacheOperationFixtures
 import org.gradle.integtests.fixtures.DirectoryBuildCacheFixture
-import org.gradle.integtests.fixtures.executer.GradleContextualExecuter
+import org.gradle.integtests.fixtures.modes.ToBeFixedForConfigurationCache
 import org.gradle.internal.jvm.Jvm
 import org.gradle.test.fixtures.file.TestFile
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 import org.gradle.util.internal.TextUtil
-import spock.lang.IgnoreIf
-import spock.lang.Unroll
 
 class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec implements DirectoryBuildCacheFixture {
+
     public static final String ORIGINAL_HELLO_WORLD = """
             public class Hello {
                 public static void main(String... args) {
@@ -34,6 +36,7 @@ class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec impleme
                 }
             }
         """
+
     public static final String CHANGED_HELLO_WORLD = """
             public class Hello {
                 public static void main(String... args) {
@@ -41,6 +44,8 @@ class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec impleme
                 }
             }
         """
+
+    def cacheOperations = new BuildCacheOperationFixtures(executer, temporaryFolder)
 
     def setup() {
         setupProjectInDirectory(testDirectory)
@@ -87,8 +92,9 @@ class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec impleme
         skipped ":compileJava"
     }
 
-    @Unroll
     def "cached tasks are executed with #rerunMethod"() {
+        def taskPath = ":compileJava"
+
         expect:
         cacheDir.listFiles() as List == []
         buildFile << """
@@ -97,29 +103,51 @@ class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec impleme
         """
 
         when:
-        withBuildCache().run "jar"
-        def originalCacheContents = listCacheFiles()
-        def originalModificationTimes = originalCacheContents.collect { file -> TestFile.makeOlder(file); file.lastModified() }
+        withBuildCache().run taskPath
+        def originalCacheKey = cacheOperations.getCacheKeyForTask(taskPath)
+        def originalCacheFile = listCacheFiles().find { it.name == originalCacheKey }
+        TestFile.makeOlder(originalCacheFile)
+        def originalModificationTime = originalCacheFile.lastModified()
+
         then:
         noneSkipped()
-        originalCacheContents.size() > 0
+        originalCacheFile.exists()
 
         expect:
         withBuildCache().run "clean"
 
         when:
-        withBuildCache().run "jar", rerunMethod
-        def updatedCacheContents = listCacheFiles()
-        def updatedModificationTimes = updatedCacheContents*.lastModified()
+        withBuildCache().run taskPath, rerunMethod
+        def updatedCacheKey = cacheOperations.getCacheKeyForTask(taskPath)
+        def updatedCacheFile = listCacheFiles().find { it.name == updatedCacheKey }
+        def updatedModificationTimes = updatedCacheFile.lastModified()
+
         then:
-        executedAndNotSkipped ":compileJava", ":jar"
-        updatedCacheContents == originalCacheContents
-        originalModificationTimes.size().times { i ->
-            assert originalModificationTimes[i] < updatedModificationTimes[i]
-        }
+        executedAndNotSkipped taskPath
+        updatedCacheKey == originalCacheKey
+        updatedCacheFile == originalCacheFile
+        updatedModificationTimes > originalModificationTime
 
         where:
         rerunMethod << ["--rerun-tasks", "-PupToDateWhenFalse=true"]
+    }
+
+    def "cached tasks are re-executed with per-task rerun"() {
+        expect:
+        cacheDir.listFiles() as List == []
+
+        when:
+        withBuildCache().run "compileJava", "jar"
+        def originalCacheContents = listCacheFiles()
+        def originalModificationTimes = originalCacheContents.collect { file -> TestFile.makeOlder(file); file.lastModified() }
+        then:
+        noneSkipped()
+
+        when:
+        withBuildCache().run "compileJava", "jar", "--rerun"
+        then:
+        skipped ":compileJava"
+        executedAndNotSkipped ":jar"
     }
 
     def "task results don't get stored when pushing is disabled"() {
@@ -177,12 +205,12 @@ class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec impleme
 
     def "tasks get cached when source code changes back to previous state"() {
         expect:
-        withBuildCache().run "jar" assertTaskNotSkipped ":compileJava" assertTaskNotSkipped ":jar"
+        withBuildCache().run "jar" assertTaskExecuted ":compileJava" assertTaskExecuted ":jar"
 
         when:
         file("src/main/java/Hello.java").text = CHANGED_HELLO_WORLD
         then:
-        withBuildCache().run "jar" assertTaskNotSkipped ":compileJava" assertTaskNotSkipped ":jar"
+        withBuildCache().run "jar" assertTaskExecuted ":compileJava" assertTaskExecuted ":jar"
 
         when:
         file("src/main/java/Hello.java").text = ORIGINAL_HELLO_WORLD
@@ -274,11 +302,11 @@ class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec impleme
         withBuildCache().fails 'adHocTask'
 
         then:
-        failure.assertHasDescription("Execution failed for task ':adHocTask'.")
+        failure.assertHasDescription("Execution failed for task ':adHocTask' (registered in build file 'build.gradle').")
         failure.assertHasCause("Could not evaluate spec for 'on CI'.")
     }
 
-    @IgnoreIf({ GradleContextualExecuter.parallel })
+    @Requires(TestExecutionPreconditions.NotParallelExecutor)
     def "can load twice from the cache with no changes"() {
         given:
         buildFile << """
@@ -389,6 +417,10 @@ class CachedTaskExecutionIntegrationTest extends AbstractIntegrationSpec impleme
         noneSkipped()
     }
 
+    @ToBeFixedForConfigurationCache(
+        issue = "https://github.com/gradle/gradle/issues/37246",
+        because = "Custom actions flag is not restored"
+    )
     def "task with custom actions gets logged"() {
         when:
         withBuildCache().run "compileJava", "--info"

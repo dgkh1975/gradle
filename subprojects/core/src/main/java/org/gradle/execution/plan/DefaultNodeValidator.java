@@ -17,53 +17,74 @@
 package org.gradle.execution.plan;
 
 import org.gradle.api.internal.GeneratedSubclasses;
-import org.gradle.internal.deprecation.DeprecationLogger;
+import org.gradle.api.internal.TaskInternal;
+import org.gradle.api.problems.ProblemReporter;
+import org.gradle.api.problems.internal.ProblemInternal;
+import org.gradle.api.problems.internal.ProblemTaskIdentityTracker;
+import org.gradle.api.problems.internal.ProblemsInternal;
+import org.gradle.api.problems.internal.TaskIdentity;
 import org.gradle.internal.execution.WorkValidationContext;
+import org.gradle.internal.execution.WorkValidationException;
+import org.gradle.internal.execution.WorkValidationUtils;
 import org.gradle.internal.reflect.validation.TypeValidationContext;
-import org.gradle.internal.reflect.validation.TypeValidationProblem;
-import org.gradle.internal.reflect.validation.UserManualReference;
 
 import java.util.List;
-import java.util.Optional;
 
-import static org.gradle.internal.reflect.validation.TypeValidationProblemRenderer.convertToSingleLine;
-import static org.gradle.internal.reflect.validation.TypeValidationProblemRenderer.renderMinimalInformationAbout;
-
+/**
+ * This class will validate a {@link LocalTaskNode}, logging any warnings discovered and halting
+ * the build by throwing a {@link WorkValidationException} if any errors are found.
+ */
 public class DefaultNodeValidator implements NodeValidator {
+
+    private final ProblemsInternal problemsService;
+
+    public DefaultNodeValidator(ProblemsInternal problemsService) {
+        this.problemsService = problemsService;
+    }
+
     @Override
-    public boolean hasValidationProblems(Node node) {
-        if (node instanceof LocalTaskNode) {
-            LocalTaskNode taskNode = (LocalTaskNode) node;
-            WorkValidationContext validationContext = taskNode.getValidationContext();
-            Class<?> taskType = GeneratedSubclasses.unpackType(taskNode.getTask());
-            // We don't know whether the task is cacheable or not, so we ignore cacheability problems for scheduling
-            TypeValidationContext taskValidationContext = validationContext.forType(taskType, false);
-            taskNode.getTaskProperties().validateType(taskValidationContext);
-            List<TypeValidationProblem> problems = validationContext.getProblems();
-            problems.stream()
-                .filter(problem -> problem.getSeverity().isWarning())
-                .forEach(problem -> {
-                    Optional<UserManualReference> userManualReference = problem.getUserManualReference();
-                    String docId = "more_about_tasks";
-                    String section = "sec:up_to_date_checks";
-                    if (userManualReference.isPresent()) {
-                        UserManualReference docref = userManualReference.get();
-                        docId = docref.getId();
-                        section = docref.getSection();
-                    }
-                    // Because our deprecation warning system doesn't support multiline strings (bummer!) both in rendering
-                    // **and** testing (no way to capture multiline deprecation warnings), we have to resort to removing details
-                    // and rendering
-                    String warning = convertToSingleLine(renderMinimalInformationAbout(problem, false, false));
-                    DeprecationLogger.deprecateBehaviour(warning)
-                        .withContext("Execution optimizations are disabled to ensure correctness.")
-                        .willBeRemovedInGradle8()
-                        .withUserManual(docId, section)
-                        .nagUser();
-                });
-            return !problems.isEmpty();
-        } else {
-            return false;
+    public boolean hasValidationProblems(LocalTaskNode node) {
+        WorkValidationContext validationContext = validateNode(node);
+        List<? extends ProblemInternal> warnings = validationContext.getWarnings();
+        List<? extends ProblemInternal> errors = validationContext.getErrors();
+        WorkValidationUtils.reportAsDeprecation(warnings);
+        reportErrorsTrackingTaskIdentity(warnings, errors, node.getTask(), validationContext);
+        return !warnings.isEmpty() || !errors.isEmpty();
+    }
+
+    private WorkValidationContext validateNode(LocalTaskNode node) {
+        WorkValidationContext validationContext = node.getValidationContext();
+        Class<?> taskType = GeneratedSubclasses.unpackType(node.getTask());
+        // We don't know whether the task is cacheable or not, so we ignore cacheability problems for scheduling
+        TypeValidationContext typeValidationContext = validationContext.forType(taskType, false);
+        node.getTaskProperties().validateType(typeValidationContext);
+        return validationContext;
+    }
+
+    /**
+     * Attributes the problems to the validated task, so they match the ones reported again when the task executes.
+     */
+    private void reportErrorsTrackingTaskIdentity(List<? extends ProblemInternal> warnings, List<? extends ProblemInternal> errors, TaskInternal task, WorkValidationContext validationContext) {
+        TaskIdentity previous = ProblemTaskIdentityTracker.getTaskIdentity();
+        try {
+            ProblemTaskIdentityTracker.setTaskIdentity(new TaskIdentity(task.getTaskIdentity().getBuildTreePath().asString()));
+            reportErrors(warnings, errors, task, validationContext);
+        } finally {
+            if (previous == null) {
+                ProblemTaskIdentityTracker.clear();
+            } else {
+                ProblemTaskIdentityTracker.setTaskIdentity(previous);
+            }
         }
+    }
+
+    private void reportErrors(List<? extends ProblemInternal> warnings, List<? extends ProblemInternal> errors, TaskInternal task, WorkValidationContext validationContext) {
+        ProblemReporter reporter = problemsService.getReporter();
+        reporter.report(warnings);
+        if (errors.isEmpty()) {
+            return;
+        }
+        WorkValidationException exception = WorkValidationException.withSummaryForContext(task.toString(), validationContext, errors.size());
+        throw reporter.throwing(exception, errors);
     }
 }

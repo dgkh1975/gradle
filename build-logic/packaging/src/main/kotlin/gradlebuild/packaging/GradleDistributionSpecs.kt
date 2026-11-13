@@ -17,6 +17,9 @@
 package gradlebuild.packaging
 
 import gradlebuild.basics.repoRoot
+import gradlebuild.packaging.tasks.GenerateClasspathModuleProperties
+import gradlebuild.packaging.tasks.GenerateLicenseFile
+import gradlebuild.packaging.tasks.GenerateSingleModuleProperties
 import org.gradle.api.Project
 import org.gradle.kotlin.dsl.*
 import java.io.File
@@ -28,42 +31,78 @@ object GradleDistributionSpecs {
      * The binary distribution containing everything needed to run Gradle (and nothing else).
      */
     fun Project.binDistributionSpec() = copySpec {
-        val gradleScriptPath by configurations.getting
-        val coreRuntimeClasspath by configurations.getting
-        val runtimeClasspath by configurations.getting
-        val runtimeApiInfoJar by tasks.getting
+        val gradleScriptPath = configurations.getByName("gradleScriptPath")
+        val coreRuntimeClasspath = configurations.getByName("coreRuntimeClasspath")
+        val generateCoreRuntimeModuleProperties = tasks.named("generateCoreRuntimeModuleProperties", GenerateClasspathModuleProperties::class.java).get()
+        val runtimeClasspath = configurations.getByName("runtimeClasspath")
+        val generateRuntimeModuleProperties = tasks.named("generateRuntimeModuleProperties", GenerateClasspathModuleProperties::class.java).get()
+        val runtimeApiInfoJar = tasks.getByName("runtimeApiInfoJar")
+        val runtimeApiInfoJarModuleProperties = tasks.named("runtimeApiInfoJarModuleProperties", GenerateSingleModuleProperties::class.java).get()
+        val gradleApiKotlinExtensionsJar = tasks.getByName("gradleApiKotlinExtensionsJar")
+        val gradleApiKotlinExtensionsJarModuleProperties = tasks.named("gradleApiKotlinExtensionsJarModuleProperties", GenerateSingleModuleProperties::class.java).get()
+        val agentsRuntimeClasspath = configurations.getByName("agentsRuntimeClasspath")
+        val generateAgentsRuntimeModuleProperties = tasks.named("generateAgentsRuntimeModuleProperties", GenerateClasspathModuleProperties::class.java).get()
+        val gradlePublicAbiClasspath = configurations.getByName("gradlePublicAbiClasspath")
+        val generatePublicAbiModuleProperties = tasks.named("generatePublicAbiModuleProperties", GenerateSingleModuleProperties::class.java).get()
+        val generateLicenseFile = tasks.named("generateLicenseFile", GenerateLicenseFile::class.java).get()
 
-        from("${repoRoot()}/LICENSE")
+        from(generateLicenseFile.outputLicenseFile)
         from("src/toplevel")
 
         into("bin") {
             from(gradleScriptPath)
-            fileMode = Integer.parseInt("0755", 8)
+            filePermissions { unix("0755") }
         }
+
+        val coreRuntimeProperties = generateCoreRuntimeModuleProperties.outputDir.asFileTree.elements
+        val runtimeProperties = generateRuntimeModuleProperties.outputDir.asFileTree.elements
 
         into("lib") {
             from(runtimeApiInfoJar)
+            from(runtimeApiInfoJarModuleProperties.outputDir)
+
+            from(gradleApiKotlinExtensionsJar)
+            from(gradleApiKotlinExtensionsJarModuleProperties.outputDir)
             from(coreRuntimeClasspath)
+            from(coreRuntimeProperties)
             into("plugins") {
                 from(runtimeClasspath - coreRuntimeClasspath)
+                from(runtimeProperties.zip(coreRuntimeProperties) { runtime, coreRuntime ->
+                    coreRuntime.mapTo(mutableSetOf<String>()) { it.asFile.name }.let { coreRuntimeNames ->
+                        runtime.mapNotNull {
+                            it.asFile.takeIf { !coreRuntimeNames.contains(it.name) }
+                        }
+                    }
+                })
+            }
+            into("agents") {
+                from(agentsRuntimeClasspath)
+                from(generateAgentsRuntimeModuleProperties.outputDir)
+            }
+            into("api") {
+                from(gradlePublicAbiClasspath)
+                from(generatePublicAbiModuleProperties.outputDir)
             }
         }
     }
 
     /**
-     * The binary distribution enriched with the sources for the classes and an offline version of Gradle's documentation (without samples).
+     * The binary distribution enriched with source files (including resources) and an offline version of Gradle's documentation (without samples).
      */
     fun Project.allDistributionSpec() = copySpec {
-        val sourcesPath by configurations.getting
-        val docsPath by configurations.getting
+        val sourcesPath = configurations.getByName("sourcesPath")
+        val docsPath = configurations.getByName("docsPath")
 
         with(binDistributionSpec())
         from(sourcesPath.incoming.artifactView { lenient(true) }.files) {
+            includeEmptyDirs = false
             eachFile {
                 val subprojectFolder = file.containingSubprojectFolder(listOf("src", "main", "java").size + relativeSourcePath.segments.size)
                 val leadingSegments = relativePath.segments.size - relativeSourcePath.segments.size
-                relativePath = relativeSourcePath.prepend("src", subprojectFolder.name).prepend(*(relativePath.segments.subArray(leadingSegments)))
-                includeEmptyDirs = false
+                @Suppress("SpreadOperator")
+                relativePath = relativeSourcePath
+                    .prepend("src", subprojectFolder.name)
+                    .prepend(*(relativePath.segments.subArray(leadingSegments)))
             }
         }
         into("docs") {
@@ -76,9 +115,10 @@ object GradleDistributionSpecs {
      * Offline version of the complete documentation of Gradle.
      */
     fun Project.docsDistributionSpec() = copySpec {
-        val docsPath by configurations.getting
+        val docsPath = configurations.getByName("docsPath")
+        val generateLicenseFile = tasks.named("generateLicenseFile", GenerateLicenseFile::class.java).get()
 
-        from("${repoRoot()}/LICENSE")
+        from(generateLicenseFile.outputLicenseFile)
         from("src/toplevel")
         into("docs") {
             from(docsPath)
@@ -90,14 +130,15 @@ object GradleDistributionSpecs {
      */
     fun Project.srcDistributionSpec() = copySpec {
         from(repoRoot().file("gradlew")) {
-            fileMode = Integer.parseInt("0755", 8)
+            filePermissions { unix("0755") }
         }
         from(repoRoot()) {
             listOf(
                 "build-logic-commons", "build-logic-commons/*",
                 "build-logic", "build-logic/*",
                 "build-logic-settings", "build-logic-settings/*",
-                "subprojects/*"
+                "subprojects/*", "platforms/*/*", "packaging/*",
+                "testing/*",
             ).forEach {
                 include("$it/*.gradle")
                 include("$it/*.gradle.kts")
@@ -111,14 +152,15 @@ object GradleDistributionSpecs {
             include("gradlew.bat")
             include("version.txt")
             include("released-versions.json")
+            include("LICENSE")
             exclude("**/.gradle/")
         }
     }
 
     private
-    fun File.containingSubprojectFolder(relativePathLenght: Int): File =
-        if (relativePathLenght == 0) this else this.parentFile.containingSubprojectFolder(relativePathLenght - 1)
+    fun File.containingSubprojectFolder(relativePathLength: Int): File =
+        if (relativePathLength == 0) this else this.parentFile.containingSubprojectFolder(relativePathLength - 1)
 
     private
-    fun Array<String>.subArray(toIndex: Int) = listOf(*this).subList(0, toIndex).toTypedArray()
+    fun Array<String>.subArray(toIndex: Int) = this.sliceArray(0 until toIndex)
 }

@@ -16,143 +16,344 @@
 
 package org.gradle.api.services.internal;
 
+import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
+import org.apache.commons.lang3.StringUtils;
 import org.gradle.BuildAdapter;
 import org.gradle.BuildResult;
 import org.gradle.api.Action;
 import org.gradle.api.NamedDomainObjectSet;
 import org.gradle.api.NonExtensible;
-import org.gradle.api.artifacts.component.BuildIdentifier;
+import org.gradle.api.internal.DelegatingNamedDomainObjectSet;
 import org.gradle.api.internal.collections.DomainObjectCollectionFactory;
+import org.gradle.api.internal.project.HoldsProjectState;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.services.BuildService;
 import org.gradle.api.services.BuildServiceParameters;
 import org.gradle.api.services.BuildServiceRegistration;
 import org.gradle.api.services.BuildServiceSpec;
+import org.gradle.internal.build.BuildIdentity;
 import org.gradle.internal.Cast;
+import org.gradle.internal.build.ExecutionResult;
+import org.gradle.internal.buildtree.BuildModelParameters;
+import org.gradle.internal.configuration.problems.IsolatedProjectsProblemsReporter;
 import org.gradle.internal.event.ListenerManager;
 import org.gradle.internal.instantiation.InstantiatorFactory;
 import org.gradle.internal.isolated.IsolationScheme;
 import org.gradle.internal.isolation.IsolatableFactory;
+import org.gradle.internal.logging.format.JavaClassNameFormatter;
+import org.gradle.internal.operations.BuildOperationContext;
+import org.gradle.internal.operations.BuildOperationDescriptor;
+import org.gradle.internal.operations.BuildOperationRunner;
+import org.gradle.internal.operations.RunnableBuildOperation;
 import org.gradle.internal.reflect.Instantiator;
 import org.gradle.internal.resources.ResourceLock;
 import org.gradle.internal.resources.SharedResource;
 import org.gradle.internal.resources.SharedResourceLeaseRegistry;
 import org.gradle.internal.service.ServiceRegistry;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
+import javax.inject.Inject;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 import java.util.function.Supplier;
 
-public class DefaultBuildServicesRegistry implements BuildServiceRegistryInternal {
-    private final BuildIdentifier buildIdentifier;
-    private final NamedDomainObjectSet<BuildServiceRegistration<?, ?>> registrations;
+import static org.gradle.api.services.internal.BuildServiceProvider.asBuildServiceProvider;
+import static org.gradle.internal.Cast.uncheckedCast;
+import static org.gradle.internal.Cast.uncheckedNonnullCast;
+
+public class DefaultBuildServicesRegistry implements BuildServiceRegistryInternal, HoldsProjectState {
+
+    private final BuildIdentity buildIdentity;
+    private final Lock registrationsLock = new ReentrantLock();
+    private NamedDomainObjectSet<BuildServiceRegistration<?, ?>> internalRegistrations;
+    private IsolatedProjectsReportingRegistrationsContainer publicRegistrations;
+    private final DomainObjectCollectionFactory collectionFactory;
     private final InstantiatorFactory instantiatorFactory;
     private final ServiceRegistry services;
-    private final ListenerManager listenerManager;
     private final IsolatableFactory isolatableFactory;
     private final SharedResourceLeaseRegistry leaseRegistry;
-    private final IsolationScheme<BuildService, BuildServiceParameters> isolationScheme = new IsolationScheme<>(BuildService.class, BuildServiceParameters.class, BuildServiceParameters.None.class);
+    private final IsolationScheme<BuildService<?>, BuildServiceParameters> isolationScheme = new IsolationScheme<>(
+        Cast.uncheckedCast(BuildService.class), BuildServiceParameters.class, BuildServiceParameters.None.class);
     private final Instantiator paramsInstantiator;
     private final Instantiator specInstantiator;
+    private final BuildServiceProvider.Listener listener;
+    private final IsolatedProjectsProblemsReporter problems;
+    private final BuildModelParameters buildModelParameters;
+    private final BuildOperationRunner buildOperationRunner;
 
-    public DefaultBuildServicesRegistry(BuildIdentifier buildIdentifier, DomainObjectCollectionFactory factory, InstantiatorFactory instantiatorFactory, ServiceRegistry services, ListenerManager listenerManager, IsolatableFactory isolatableFactory, SharedResourceLeaseRegistry leaseRegistry) {
-        this.buildIdentifier = buildIdentifier;
-        this.registrations = Cast.uncheckedCast(factory.newNamedDomainObjectSet(BuildServiceRegistration.class));
+    public DefaultBuildServicesRegistry(
+        BuildIdentity buildIdentity,
+        DomainObjectCollectionFactory collectionFactory,
+        InstantiatorFactory instantiatorFactory,
+        ServiceRegistry services,
+        ListenerManager listenerManager,
+        IsolatableFactory isolatableFactory,
+        SharedResourceLeaseRegistry leaseRegistry,
+        BuildServiceProvider.Listener listener,
+        IsolatedProjectsProblemsReporter problems,
+        BuildModelParameters buildModelParameters,
+        BuildOperationRunner buildOperationRunner
+    ) {
+        this.buildIdentity = buildIdentity;
+        this.internalRegistrations = uncheckedCast(collectionFactory.newNamedDomainObjectSet(BuildServiceRegistration.class));
+        this.problems = problems;
+        this.buildModelParameters = buildModelParameters;
+        this.publicRegistrations = createPublicRegistrations(buildModelParameters, internalRegistrations, problems, registrationsLock, instantiatorFactory);
+        this.collectionFactory = collectionFactory;
         this.instantiatorFactory = instantiatorFactory;
         this.services = services;
-        this.listenerManager = listenerManager;
         this.isolatableFactory = isolatableFactory;
         this.leaseRegistry = leaseRegistry;
         this.paramsInstantiator = instantiatorFactory.decorateScheme().withServices(services).instantiator();
-        this.specInstantiator = instantiatorFactory.decorateLenientScheme().withServices(services).instantiator();
+        this.specInstantiator = instantiatorFactory.decorateLenient(services);
+        this.listener = listener;
+        this.buildOperationRunner = buildOperationRunner;
+        listenerManager.addListener(new ServiceCleanupListener());
+    }
+
+    private <U> U withRegistrations(Function<NamedDomainObjectSet<BuildServiceRegistration<?, ?>>, U> function) {
+        registrationsLock.lock();
+        try {
+            return function.apply(internalRegistrations);
+        } finally {
+            registrationsLock.unlock();
+        }
     }
 
     @Override
     public NamedDomainObjectSet<BuildServiceRegistration<?, ?>> getRegistrations() {
-        return registrations;
+        return publicRegistrations;
+    }
+
+    private static IsolatedProjectsReportingRegistrationsContainer createPublicRegistrations(
+        BuildModelParameters buildModelParameters,
+        NamedDomainObjectSet<BuildServiceRegistration<?, ?>> internalRegistrations,
+        IsolatedProjectsProblemsReporter problems,
+        Lock registrationsLock,
+        InstantiatorFactory instantiatorFactory
+    ) {
+        FunctionRunner synchronizedRunner = new FunctionRunner() {
+            @Override
+            public <P, R extends @Nullable Object> R run(P p, Function<P, R> function) {
+                registrationsLock.lock();
+                try {
+                    return function.apply(p);
+                } finally {
+                    registrationsLock.unlock();
+                }
+            }
+        };
+
+        // Use instantiator so we generate Closure-accepting methods
+        return instantiatorFactory.decorateScheme().instantiator().newInstance(
+            IsolatedProjectsReportingRegistrationsContainer.class,
+            internalRegistrations,
+            problems,
+            buildModelParameters,
+            synchronizedRunner
+        );
     }
 
     @Override
-    public SharedResource forService(Provider<? extends BuildService<?>> service) {
-        if (!(service instanceof BuildServiceProvider)) {
-            throw new IllegalArgumentException("The given provider is not a build service provider.");
+    public SharedResource forService(BuildServiceProvider<?, ?> service) {
+        DefaultServiceRegistration<?, ?> registration = findRegistration(service.getType(), service.getName());
+        if (registration == null) {
+            // no corresponding service registered
+            return null;
         }
-        BuildServiceProvider<?, ?> provider = (BuildServiceProvider<?, ?>) service;
-        DefaultServiceRegistration<?, ?> registration = (DefaultServiceRegistration<?, ?>) registrations.getByName(provider.getName());
         return registration.asSharedResource(() -> {
             // Prevent further changes to registration
             registration.getMaxParallelUsages().finalizeValue();
             int maxUsages = registration.getMaxParallelUsages().getOrElse(-1);
 
             if (maxUsages > 0) {
-                leaseRegistry.registerSharedResource(provider.getName(), maxUsages);
+                leaseRegistry.registerSharedResource(registration.getName(), maxUsages);
             }
-            return new ServiceBackedSharedResource(provider.getName(), maxUsages, leaseRegistry);
+            return new ServiceBackedSharedResource(registration.getName(), maxUsages, leaseRegistry);
         });
+    }
+
+    @Nullable
+    @Override
+    public DefaultServiceRegistration<?, ?> findRegistration(Class<?> type, String name) {
+        return uncheckedCast(!name.isEmpty() ?
+            findByName(name) :
+            findByType(type)
+        );
+    }
+
+    @Override
+    public Set<BuildServiceRegistration<?, ?>> findRegistrations(Class<?> type, @Nullable String name) {
+        return withRegistrations(registrations ->
+            ImmutableSet.<BuildServiceRegistration<?, ?>>builder().addAll(registrations.matching(it ->
+                type.isAssignableFrom(BuildServiceProvider.getProvidedType(it.getService()))
+                    &&
+                (StringUtils.isEmpty(name) || it.getName().equals(name))
+            )).build()
+        );
+    }
+
+    @Override
+    @Nullable
+    public BuildServiceRegistration<?, ?> findByName(String name) {
+        return withRegistrations(registrations -> registrations.findByName(name));
+    }
+
+    @Nullable
+    @Override
+    public BuildServiceRegistration<?, ?> findByType(Class<?> type) {
+        return findRegistrations(type, null).stream().findFirst().orElse(null);
     }
 
     @Override
     public <T extends BuildService<P>, P extends BuildServiceParameters> Provider<T> registerIfAbsent(String name, Class<T> implementationType, Action<? super BuildServiceSpec<P>> configureAction) {
-        BuildServiceRegistration<?, ?> existing = registrations.findByName(name);
-        if (existing != null) {
-            // TODO - assert same type
-            // TODO - assert same parameters
-            return Cast.uncheckedCast(existing.getService());
-        }
+        return doRegisterIfAbsent(name, implementationType, () -> {
+            // TODO - extract some shared infrastructure to take care of parameter instantiation (eg strict vs lenient, which services are visible)
+            P parameters = instantiateParametersOf(implementationType);
 
-        // TODO - extract some shared infrastructure to take care of parameter instantation (eg strict vs lenient, which services are visible)
-        Class<P> parameterType = isolationScheme.parameterTypeFor(implementationType);
-        P parameters;
-        if (parameterType != null) {
-            parameters = paramsInstantiator.newInstance(parameterType);
-        } else {
-            // TODO - should either provider a non-null empty parameters in this case or fail whenever the parameters are queried in the service, the spec and the registration
-            parameters = null;
-        }
-
-        // TODO - should defer execution of the action, to match behaviour for other container `register()` methods.
-
-        DefaultServiceSpec<P> spec = Cast.uncheckedNonnullCast(specInstantiator.newInstance(DefaultServiceSpec.class, parameters));
-        configureAction.execute(spec);
-        Integer maxParallelUsages = spec.getMaxParallelUsages().getOrNull();
-
-        // TODO - finalize the parameters during isolation
-        // TODO - need to lock the project during isolation - should do this the same way as artifact transforms
-        return doRegister(name, implementationType, parameters, maxParallelUsages);
+            // TODO - should defer execution of the action, to match behaviour for other container `register()` methods.
+            DefaultServiceSpec<P> spec = uncheckedNonnullCast(specInstantiator.newInstance(DefaultServiceSpec.class, parameters));
+            configureAction.execute(spec);
+            return spec;
+        });
     }
 
     @Override
-    public BuildServiceProvider<?, ?> register(String name, Class<? extends BuildService> implementationType, BuildServiceParameters parameters, int maxUsages) {
-        if (registrations.findByName(name) != null) {
-            throw new IllegalArgumentException(String.format("Service '%s' has already been registered.", name));
+    public BuildServiceProvider<?, ?> registerIfAbsent(String name, Class<? extends BuildService<?>> implementationType, BuildServiceParameters parameters, int maxUsages) {
+        Supplier<BuildServiceSpec<?>> buildServiceSpecSupplier = () -> {
+            DefaultServiceSpec<?> spec = uncheckedNonnullCast(specInstantiator.newInstance(DefaultServiceSpec.class, parameters));
+            spec.getMaxParallelUsages().set(maxUsages);
+            return spec;
+        };
+        return doRegisterIfAbsent(name, uncheckedNonnullCast(implementationType), uncheckedNonnullCast(buildServiceSpecSupplier));
+    }
+
+    private <T extends BuildService<P>, P extends BuildServiceParameters> BuildServiceProvider<T, P> doRegisterIfAbsent(String name, Class<T> implementationType, Supplier<BuildServiceSpec<P>> specSupplier) {
+        return withRegistrations(registrations -> {
+            BuildServiceRegistration<?, ?> existing = registrations.findByName(name);
+            if (existing != null) {
+                // TODO - assert same type
+                // TODO - assert same parameters
+                return uncheckedNonnullCast(existing.getService());
+            }
+            // TODO - finalize the parameters during isolation
+            // TODO - need to lock the project during isolation - should do this the same way as artifact transforms
+            BuildServiceSpec<P> spec = specSupplier.get();
+            return doRegister(name, implementationType, spec.getParameters(), spec.getMaxParallelUsages().getOrNull(), registrations);
+        });
+    }
+
+    @Override
+    public List<ResourceLock> getSharedResources(Set<Provider<? extends BuildService<?>>> services) {
+        if (services.isEmpty()) {
+            return Collections.emptyList();
         }
-        return doRegister(name, Cast.uncheckedNonnullCast(implementationType), parameters, maxUsages <= 0 ? null : maxUsages);
+        ImmutableList.Builder<ResourceLock> locks = ImmutableList.builder();
+        for (Provider<? extends BuildService<?>> service : services) {
+            if (!service.isPresent()) {
+                continue;
+            }
+            SharedResource resource = forService(asBuildServiceProvider(service));
+            if (resource != null && resource.getMaxUsages() > 0) {
+                locks.add(resource.getResourceLock());
+            }
+        }
+        return locks.build();
+    }
+
+    private <T extends BuildService<P>, P extends BuildServiceParameters> P instantiateParametersOf(Class<T> implementationType) {
+        Class<P> parameterType = isolationScheme.parameterTypeFor(implementationType);
+        return isolationScheme.instantiateParameters(parameterType, paramsInstantiator::newInstance);
+    }
+
+    @Override
+    public BuildServiceProvider<?, ?> consume(String name, Class<? extends BuildService<?>> implementationType) {
+        return doConsume(name, uncheckedCast(implementationType));
+    }
+
+    private <T extends BuildService<BuildServiceParameters>> BuildServiceProvider<T, BuildServiceParameters> doConsume(String name, Class<T> implementationType) {
+        return new ConsumedBuildServiceProvider<>(buildIdentity, name, implementationType, services);
     }
 
     private <T extends BuildService<P>, P extends BuildServiceParameters> BuildServiceProvider<T, P> doRegister(
         String name,
         Class<T> implementationType,
         P parameters,
-        @Nullable Integer maxParallelUsages
+        @Nullable Integer maxParallelUsages,
+        NamedDomainObjectSet<BuildServiceRegistration<?, ?>> registrations
     ) {
-        BuildServiceProvider<T, P> provider = new BuildServiceProvider<>(
-            buildIdentifier,
+        RegisteredBuildServiceProvider<T, P> provider = new RegisteredBuildServiceProvider<>(
+            buildIdentity,
             name,
             implementationType,
             parameters,
             isolationScheme,
             instantiatorFactory.injectScheme(),
             isolatableFactory,
-            services
+            services,
+            listener,
+            maxParallelUsages
         );
 
-        DefaultServiceRegistration<T, P> registration = Cast.uncheckedNonnullCast(specInstantiator.newInstance(DefaultServiceRegistration.class, name, parameters, provider));
+        DefaultServiceRegistration<T, P> registration = uncheckedNonnullCast(specInstantiator.newInstance(DefaultServiceRegistration.class, name, parameters, provider));
         registration.getMaxParallelUsages().set(maxParallelUsages);
         registrations.add(registration);
 
         // TODO - should stop the service after last usage (ie after the last task that uses it) instead of at the end of the build
         // TODO - should reuse service across build invocations, until the parameters change (which contradicts the previous item)
-        listenerManager.addListener(new ServiceCleanupListener(provider));
         return provider;
+    }
+
+    @Override
+    public void discardAll() {
+        discardAll(false);
+    }
+
+    private void discardAll(boolean forceAll) {
+        withRegistrations(registrations -> {
+            List<DefaultServiceRegistration<?, ?>> preserved = new ArrayList<>();
+            try {
+                ExecutionResult.forEach(registrations, registration -> {
+                    DefaultServiceRegistration<?, ?> serviceRegistration = (DefaultServiceRegistration<?, ?>) registration;
+                    // Do not stop services that are to be retained beyond configuration time (e.g. build event listeners)
+                    if (forceAll || !serviceRegistration.provider.isKeepAlive()) {
+                        stop(serviceRegistration.provider);
+                    } else {
+                        preserved.add(serviceRegistration);
+                    }
+                }).rethrow();
+            } finally {
+                // Replace the entire container, rather than clear it, to discard all the service instances and because it may contain configuration actions and
+                // other state that can affect the service instances when they are registered again
+                this.internalRegistrations = uncheckedCast(collectionFactory.newNamedDomainObjectSet(BuildServiceRegistration.class));
+                this.publicRegistrations = createPublicRegistrations(buildModelParameters, internalRegistrations, problems, registrationsLock, instantiatorFactory);
+            }
+            this.internalRegistrations.addAll(preserved);
+            return null;
+        });
+    }
+
+    private void stop(RegisteredBuildServiceProvider<?, ?> provider) {
+        String typeName = provider.getImplementationType().getName();
+        provider.maybeStop(close -> buildOperationRunner.run(new RunnableBuildOperation() {
+            @Override
+            public void run(BuildOperationContext context) {
+                close.run();
+            }
+
+            @Override
+            public BuildOperationDescriptor.Builder description() {
+                return BuildOperationDescriptor.displayName("Close build service '" + provider.getName() + "' (" + typeName + ")")
+                    .progressDisplayName("Close build service '" + provider.getName() + "' (" + JavaClassNameFormatter.abbreviateJavaPackage(typeName) + ")")
+                    .owner(buildIdentity);
+            }
+        }));
     }
 
     private static class ServiceBackedSharedResource implements SharedResource {
@@ -172,18 +373,18 @@ public class DefaultBuildServicesRegistry implements BuildServiceRegistryInterna
         }
 
         @Override
-        public ResourceLock getResourceLock(int usages) {
-            return leaseRegistry.getResourceLock(name, usages);
+        public ResourceLock getResourceLock() {
+            return leaseRegistry.getResourceLock(name);
         }
     }
 
     public static abstract class DefaultServiceRegistration<T extends BuildService<P>, P extends BuildServiceParameters> implements BuildServiceRegistration<T, P> {
         private final String name;
         private final P parameters;
-        private final BuildServiceProvider<T, P> provider;
+        private final RegisteredBuildServiceProvider<T, P> provider;
         private SharedResource resourceWrapper;
 
-        public DefaultServiceRegistration(String name, P parameters, BuildServiceProvider<T, P> provider) {
+        public DefaultServiceRegistration(String name, P parameters, RegisteredBuildServiceProvider<T, P> provider) {
             this.name = name;
             this.parameters = parameters;
             this.provider = provider;
@@ -231,16 +432,63 @@ public class DefaultBuildServicesRegistry implements BuildServiceRegistryInterna
         }
     }
 
-    private static class ServiceCleanupListener extends BuildAdapter {
-        private final BuildServiceProvider<?, ?> provider;
+    private class ServiceCleanupListener extends BuildAdapter {
+        @SuppressWarnings("deprecation")
+        @Override
+        public void buildFinished(BuildResult result) {
+            discardAll(true);
+        }
+    }
 
-        ServiceCleanupListener(BuildServiceProvider<?, ?> provider) {
-            this.provider = provider;
+    // package-private to permit instantiation
+    static class IsolatedProjectsReportingRegistrationsContainer extends DelegatingNamedDomainObjectSet<BuildServiceRegistration<?, ?>> {
+
+        private final IsolatedProjectsProblemsReporter problems;
+        private final BuildModelParameters buildModelParameters;
+        private final FunctionRunner synchronizedRunner;
+
+        @Inject
+        public IsolatedProjectsReportingRegistrationsContainer(
+            NamedDomainObjectSet<BuildServiceRegistration<?, ?>> delegate,
+            IsolatedProjectsProblemsReporter problems,
+            BuildModelParameters buildModelParameters,
+            FunctionRunner synchronizedRunner
+        ) {
+            super(delegate);
+            this.problems = problems;
+            this.buildModelParameters = buildModelParameters;
+            this.synchronizedRunner = synchronizedRunner;
         }
 
         @Override
-        public void buildFinished(BuildResult result) {
-            provider.maybeStop();
+        public @Nullable BuildServiceRegistration<?, ?> findByName(String name) {
+            // Do not call super.findByName so it does not call onMethodCall,
+            // and we can unconditionally emit a violation below.
+            return synchronizedRunner.run(name, getDelegate()::findByName);
         }
+
+        @Override
+        protected void onMethodCall(String signature) {
+            if (buildModelParameters.isIsolatedProjects()) {
+                problems.report(factory ->
+                    factory.problem("Unsupported build service registrations access", message -> message
+                        .text("Cannot call ").reference(signature)
+                        .text(" on ").reference("BuildServicesRegistry.getRegistrations()")
+                        .text(" when Isolated Projects is enabled. Only ").reference("findByName(String)")
+                        .text(" is permitted. Alternatively, use ").reference("BuildServicesRegistry.registerIfAbsent(String, Class)")
+                        .text(" if possible.")
+                    ).build()
+                );
+            }
+            super.onMethodCall(signature);
+        }
+
     }
+
+    interface FunctionRunner {
+
+        <P, R extends @Nullable Object> R run(P p, Function<P, R> function);
+
+    }
+
 }

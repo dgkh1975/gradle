@@ -16,7 +16,7 @@
 
 package org.gradle.api
 
-import groovy.transform.NotYetImplemented
+import groovy.test.NotYetImplemented
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import spock.lang.Ignore
 import spock.lang.Issue
@@ -41,8 +41,9 @@ dependencies {
 }
 
 task show {
+    def runtimeClasspath = configurations.runtimeClasspath
     doLast {
-        configurations.runtimeClasspath.files.each { println it }
+        runtimeClasspath.files.each { println it }
     }
 }
 """

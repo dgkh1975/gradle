@@ -2,28 +2,49 @@ plugins {
     id("gradlebuild.build-logic.kotlin-dsl-gradle-plugin")
 }
 
-dependencies {
-    implementation(project(":basics"))
-    implementation(project(":binary-compatibility"))
-    implementation(project(":cleanup"))
-    implementation(project(":documentation"))
-    implementation(project(":integration-testing"))
-    implementation(project(":performance-testing"))
-    implementation(project(":profiling"))
+description = "Provides plugins to configure quality checks (incubating report, CodeNarc, et al)"
 
-    implementation("me.champeau.gradle:japicmp-gradle-plugin")
-    implementation("org.codenarc:CodeNarc") {
-        exclude(group = "org.codehaus.groovy")
+dependencies {
+    implementation("gradlebuild:basics")
+
+    implementation(projects.cleanup)
+    implementation(projects.documentation)
+    implementation(projects.integrationTesting)
+    implementation(projects.jvm)
+    implementation(projects.performanceTesting)
+    implementation(projects.profiling)
+    implementation(projects.binaryCompatibility)
+    implementation(projects.dependencyModules)
+
+    implementation(buildLibs.gson) {
+        because("Package-info data is exchanged between projects as JSON")
     }
-    implementation("com.github.javaparser:javaparser-symbol-solver-core") {
-        exclude(group = "com.google.guava")
+    implementation(buildLibs.codenarc) {
+        // Groovy comes from the Gradle distribution, so none of CodeNarc's Groovy
+        // distribution is wanted. The exclusion is group-wide on purpose: narrowing it
+        // to today's modules would silently let a future CodeNarc Groovy artifact back in.
+        exclude(group = "org.apache.groovy")
     }
-    implementation("org.gradle.kotlin:gradle-kotlin-dsl-conventions")
-    implementation(kotlin("gradle-plugin"))
-    implementation("com.diffplug.spotless:spotless-plugin-gradle") {
-        exclude(group = "org.codehaus.groovy", module = "groovy-xml")
+    implementation(buildLibs.javaParserSymbolSolver) {
+        exclude(group = "com.google.guava", module = "guava")
     }
-    implementation(kotlin("compiler-embeddable") as String) {
-        because("Required by IncubatingApiReportTask")
+    implementation(buildLibs.kotlinGradlePlugin)
+    compileOnly(buildLibs.kotlinCompilerEmbeddable) {
+        because("Required by IncubatingApiReportTask and Gradle10RemovalReportTask")
     }
+    implementation(buildLibs.develocityPlugin) {
+        because("Arch-test plugin configures the PTS extension")
+    }
+
+    testImplementation(buildLibs.commonsLang3)
+    testImplementation(buildLibs.kotlinCompilerEmbeddable) {
+        because("RemovalReportWorkActionTest parses Kotlin sources via KotlinSourceParser")
+    }
+}
+
+configurations.testRuntimeClasspath {
+    // Configuration-level on purpose: the plugin is a direct dependency above and also arrives
+    // through most project dependencies, so only the resolved classpath can drop it everywhere.
+    // https://youtrack.jetbrains.com/issue/KT-87492/KGP-jar-bundles-a-partial-and-unshaded-copy-of-org.jetbrains.kotlin.com.intellij.-classes-that-collide-with-kotlin-compiler
+    exclude(group = "org.jetbrains.kotlin", module = "kotlin-gradle-plugin")
 }

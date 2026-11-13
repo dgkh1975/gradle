@@ -15,6 +15,7 @@
  */
 package org.gradle.api.artifacts.query;
 
+import org.gradle.api.artifacts.ArtifactView;
 import org.gradle.api.artifacts.component.ComponentIdentifier;
 import org.gradle.api.artifacts.result.ArtifactResolutionResult;
 import org.gradle.api.component.Artifact;
@@ -24,6 +25,11 @@ import java.util.Collection;
 
 /**
  * A builder to construct a query that can resolve selected software artifacts of the specified components.
+ * <p>
+ * This is a legacy API and is in maintenance mode. In future versions of Gradle,
+ * this API will be deprecated and removed. New code should not use this API. Prefer
+ * {@link ArtifactView.ViewConfiguration#withVariantReselection()} for resolving
+ * sources and javadoc.
  *
  * <pre class='autoTested'>
  * plugins {
@@ -51,13 +57,17 @@ import java.util.Collection;
 public interface ArtifactResolutionQuery {
     /**
      * Specifies the set of components to include in the result.
+     *
      * @param componentIds The identifiers of the components to be queried.
+     * @since 2.0
      */
     ArtifactResolutionQuery forComponents(Iterable<? extends ComponentIdentifier> componentIds);
 
     /**
      * Specifies the set of components to include in the result.
+     *
      * @param componentIds The identifiers of the components to be queried.
+     * @since 2.0
      */
     ArtifactResolutionQuery forComponents(ComponentIdentifier... componentIds);
 
@@ -67,7 +77,6 @@ public interface ArtifactResolutionQuery {
      * @param group Module group.
      * @param name Module name.
      * @param version Module version.
-     *
      * @since 4.5
      */
     ArtifactResolutionQuery forModule(String group, String name, String version);
@@ -79,9 +88,10 @@ public interface ArtifactResolutionQuery {
      *
      * @param componentType The expected type of the component.
      * @param artifactTypes The artifacts to retrieve for the queried components.
+     * @since 2.0
      */
+    @SuppressWarnings("unchecked")
     ArtifactResolutionQuery withArtifacts(Class<? extends Component> componentType, Class<? extends Artifact>... artifactTypes);
-
 
     /**
      * Defines the type of component that is expected in the result, and the artifacts to retrieve for components of this type.
@@ -97,6 +107,7 @@ public interface ArtifactResolutionQuery {
     /**
      * Actually execute the query, returning a query result.
      * Note that {@link #withArtifacts(Class, Class[])} must be called before executing the query.
+     * @since 2.0
      */
     ArtifactResolutionResult execute();
 }

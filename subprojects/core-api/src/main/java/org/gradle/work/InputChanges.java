@@ -83,6 +83,7 @@ public interface InputChanges {
      * <ul>
      *     <li>Every input file is reported via {@link #getFileChanges(FileCollection)} and {@link #getFileChanges(Provider)} as if it was {@link ChangeType#ADDED}.</li>
      * </ul>
+     * @since 5.4
      */
     boolean isIncremental();
 
@@ -95,7 +96,13 @@ public interface InputChanges {
      *     Only input file properties annotated with {@literal @}{@link Incremental} or {@literal @}{@link org.gradle.api.tasks.SkipWhenEmpty} can be queried for changes.
      * </p>
      *
+     * <p>
+     *     Note that for inputs with {@link org.gradle.api.tasks.PathSensitivity#NONE}, instead of a {@link ChangeType#MODIFIED} event,
+     *     file modifications can be reported as a pair of an {@link ChangeType#ADDED} and a {@link ChangeType#REMOVED} event.
+     * </p>
+     *
      * @param parameter The value of the parameter to query.
+     * @since 5.4
      */
     Iterable<FileChange> getFileChanges(FileCollection parameter);
 
@@ -113,7 +120,13 @@ public interface InputChanges {
      *     Only input file properties annotated with {@literal @}{@link Incremental} or {@literal @}{@link org.gradle.api.tasks.SkipWhenEmpty} can be queried for changes.
      * </p>
      *
+     * <p>
+     *     Note that for inputs with {@link org.gradle.api.tasks.PathSensitivity#NONE}, instead of a {@link ChangeType#MODIFIED} event,
+     *     file modifications can be reported as a pair of an {@link ChangeType#ADDED} and a {@link ChangeType#REMOVED} event.
+     * </p>
+     *
      * @param parameter The value of the parameter to query.
+     * @since 5.4
      */
     Iterable<FileChange> getFileChanges(Provider<? extends FileSystemLocation> parameter);
 }

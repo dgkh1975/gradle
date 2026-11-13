@@ -18,14 +18,15 @@ package org.gradle.api.tasks;
 
 import org.gradle.api.Incubating;
 import org.gradle.api.InvalidUserDataException;
+import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.internal.file.copy.CopyAction;
 import org.gradle.api.internal.file.copy.CopySpecInternal;
 import org.gradle.api.internal.file.copy.DestinationRootCopySpec;
 import org.gradle.api.internal.file.copy.FileCopyAction;
+import org.gradle.internal.instrumentation.api.annotations.NotToBeReplacedByLazyProperty;
 import org.gradle.work.DisableCachingByDefault;
 
 import java.io.File;
-import java.util.concurrent.Callable;
 
 /**
  * Copies files into a destination directory. This task can also rename and filter files as it copies. The task
@@ -67,9 +68,10 @@ import java.util.concurrent.Callable;
  *     with dataContent
  * }
  * </pre>
+ * @since 0.7
  */
 @DisableCachingByDefault(because = "Not worth caching")
-public class Copy extends AbstractCopyTask {
+public abstract class Copy extends AbstractCopyTask {
 
     @Override
     protected CopyAction createCopyAction() {
@@ -86,35 +88,35 @@ public class Copy extends AbstractCopyTask {
     }
 
     @Override
+    @NotToBeReplacedByLazyProperty(because = "Read-only nested like property")
     public DestinationRootCopySpec getRootSpec() {
         return (DestinationRootCopySpec) super.getRootSpec();
     }
 
     /**
-     * Force Gradle to ignore content in the destination directory.
+     * The directory to copy files into.
      * <p>
-     * This can be useful if the destination directory contains unreadable content, or special files like named pipes that Gradle cannot snapshot.
-     * It can also be useful when copying to a location not exclusively owned by the build, for example to a common installation directory.
-     * In the latter case calling this method will prevent Gradle from trying to snapshot a potentially large amount of content (that might also contain unreadable files).
-     * Copy tasks which ignore content in the destination directory are never up-to-date.
+     * Setting this property is equivalent to calling {@link #into(Object)} on this task, and reading it reflects
+     * the destination configured through {@link #into(Object)} or {@link #setDestinationDir(File)}.
      *
-     * @see Untracked
-     * @since 7.3
-     */
+     * @return the destination directory property
+     * @since 9.8.0
+    */
     @Incubating
-    public void ignoreExistingContentInDestinationDir() {
-        getOutputs()
-            .dir((Callable<File>) this::getDestinationDir)
-            .withPropertyName("untrackedDestinationDir")
-            .untracked();
+    @Optional
+    @OutputDirectory
+    public DirectoryProperty getDestinationDirectory() {
+        return getRootSpec().getDestinationDirectory();
     }
 
     /**
      * Returns the directory to copy files into.
      *
      * @return The destination dir.
+     * @since 0.7
      */
     @OutputDirectory
+    @NotToBeReplacedByLazyProperty(because = "Superseded by the lazy getDestinationDirectory() property", willBeDeprecated = true)
     public File getDestinationDir() {
         return getRootSpec().getDestinationDir();
     }
@@ -123,6 +125,7 @@ public class Copy extends AbstractCopyTask {
      * Sets the directory to copy files into. This is the same as calling {@link #into(Object)} on this task.
      *
      * @param destinationDir The destination directory. Must not be null.
+     * @since 0.7
      */
     public void setDestinationDir(File destinationDir) {
         into(destinationDir);

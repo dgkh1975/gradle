@@ -1,188 +1,302 @@
 plugins {
     id("gradlebuild.distribution.api-java")
+    id("gradlebuild.cross-version-tests")
 }
 
-configurations {
-    register("reports")
-}
-
-tasks.classpathManifest {
-    optionalProjects.add("gradle-kotlin-dsl")
-    // The gradle-runtime-api-info.jar is added by a 'distributions-...' project if it is on the (integration test) runtime classpath.
-    // It contains information services in ':core' need to reason about the complete Gradle distribution.
-    // To allow parts of ':core' code to be instantiated in unit tests without relying on this functionality, the dependency is optional.
-    optionalProjects.add("gradle-runtime-api-info")
-}
+description = "Public and internal 'core' Gradle APIs with implementation"
 
 dependencies {
-    implementation(project(":base-services"))
-    implementation(project(":base-services-groovy"))
-    implementation(project(":enterprise-operations"))
-    implementation(project(":functional"))
-    implementation(project(":messaging"))
-    implementation(project(":logging"))
-    implementation(project(":resources"))
-    implementation(project(":cli"))
-    implementation(project(":build-option"))
-    implementation(project(":native"))
-    implementation(project(":model-core"))
-    implementation(project(":persistent-cache"))
-    implementation(project(":build-cache"))
-    implementation(project(":build-cache-packaging"))
-    implementation(project(":core-api"))
-    implementation(project(":files"))
-    implementation(project(":file-temp"))
-    implementation(project(":file-collections"))
-    implementation(project(":process-services"))
-    implementation(project(":jvm-services"))
-    implementation(project(":model-groovy"))
-    implementation(project(":snapshots"))
-    implementation(project(":file-watching"))
-    implementation(project(":execution"))
-    implementation(project(":worker-processes"))
-    implementation(project(":normalization-java"))
+    api(projects.ant)
+    api(projects.antApi)
+    api(projects.baseAsm)
+    api(projects.baseServices)
+    api(projects.baseServicesGroovy)
+    api(projects.buildCache)
+    api(projects.buildCacheBase)
+    api(projects.buildCacheCore)
+    api(projects.buildDiscovery)
+    api(projects.buildDiscoveryImpl)
+    api(projects.buildInitSpecs)
+    api(projects.buildOperations)
+    api(projects.buildOption)
+    api(projects.buildProcessServices)
+    api(projects.classpath)
+    api(projects.classloaders)
+    api(projects.cli)
+    api(projects.collections)
+    api(projects.concurrent)
+    api(projects.configurationProblemsBase)
+    api(projects.coreApi)
+    api(projects.credentialsApi)
+    api(projects.daemonMessaging)
+    api(projects.declarativeDslApi)
+    api(projects.domainObjectCollections)
+    api(projects.enterpriseLogging)
+    api(projects.enterpriseOperations)
+    api(projects.execution)
+    api(projects.fileCollections)
+    api(projects.fileOperations)
+    api(projects.fileTemp)
+    api(projects.fileWatching)
+    api(projects.files)
+    api(projects.functional)
+    api(projects.hashing)
+    api(projects.hashingServices)
+    api(projects.instrumentationAgentServices)
+    api(projects.instrumentationReporting)
+    api(projects.internalInstrumentationApi)
+    api(projects.jvmServices)
+    api(projects.logging)
+    api(projects.loggingApi)
+    api(projects.messaging)
+    api(projects.modelCore)
+    api(projects.modelReflect)
+    api(projects.native)
+    api(projects.normalization)
+    api(projects.normalizationApi)
+    api(projects.normalizationJava)
+    api(projects.persistentCache)
+    api(projects.problemsApi)
+    api(projects.processServices)
+    api(projects.processServicesApi)
+    api(projects.processServicesBase)
+    api(projects.resources)
+    api(projects.scopedPersistentCache)
+    api(projects.serialization)
+    api(projects.serviceLookup)
+    api(projects.serviceProvider)
+    api(projects.snapshots)
+    api(projects.projectFeatures)
+    api(projects.startParameter)
+    api(projects.stdlibJavaExtensions)
+    api(projects.time)
+    api(projects.toolingApi)
+    api(projects.versionedCache)
+    api(projects.workerShared)
 
-    implementation(libs.groovy)
-    implementation(libs.groovyAnt)
-    implementation(libs.groovyAstbuilder)
-    implementation(libs.groovyConsole)
-    implementation(libs.groovyDateUtil)
-    implementation(libs.groovyDatetime)
-    implementation(libs.groovyDoc)
-    implementation(libs.groovyJson)
-    implementation(libs.groovyNio)
-    implementation(libs.groovySql)
-    implementation(libs.groovyTemplates)
-    implementation(libs.groovyTest)
-    implementation(libs.groovyXml)
+    api(libs.asm)
+    api(libs.asmTree)
+    api(libs.groovy)
+    api(libs.guava)
+    api(libs.inject)
+    api(libs.jspecify)
+    api(libs.jsr305)
+
+    implementation(projects.buildCachePackaging)
+    implementation(projects.buildCacheSpi)
+    implementation(projects.buildDiscoveryReporting)
+    implementation(projects.buildOperationsTrace)
+    implementation(projects.daemonLogging)
+    implementation(projects.modelGroovy)
+    implementation(projects.problemsRendering)
+    implementation(projects.processMemoryServices)
+    implementation(projects.serviceRegistryBuilder)
+    implementation(projects.coreFlowServicesApi) {
+        because("DefaultBuildServicesRegistry has ordering dependency with FlowScope")
+    }
+    implementation(projects.projectFeaturesApi)
+    implementation(projects.workerProcessServices)
+
     implementation(libs.ant)
-    implementation(libs.guava)
-    implementation(libs.inject)
-    implementation(libs.asm)
-    implementation(libs.asmCommons)
-    implementation(libs.slf4jApi)
+    implementation(libs.commonsCompress)
     implementation(libs.commonsIo)
     implementation(libs.commonsLang)
+    implementation(libs.errorProneAnnotations)
+    implementation(libs.fastutil)
+    implementation(libs.groovyJson)
+    implementation(libs.groovyXml)
     implementation(libs.nativePlatform)
-    implementation(libs.xmlApis)
-    implementation(libs.tomlj)
-    implementation(libs.javaParser) {
-        because("The Groovy compiler inspects the dependencies at compile time")
+    implementation(libs.slf4jApi)
+    implementation(libs.tomlj) {
+        // Used for its nullability annotations, not needed at runtime
+        exclude("org.checkerframework", "checker-qual")
     }
 
-    testImplementation(project(":plugins"))
-    testImplementation(project(":testing-base"))
-    testImplementation(project(":platform-native"))
+
+    compileOnly(libs.kotlinStdlib) {
+        because("it needs to forward calls from instrumented code to the Kotlin standard library")
+    }
+
+    // Libraries that are not used in this project but required in the distribution
+    runtimeOnly(libs.groovyAstbuilder)
+    runtimeOnly(libs.groovyDateUtil)
+    runtimeOnly(libs.groovyDatetime)
+    runtimeOnly(libs.groovyDoc)
+    runtimeOnly(libs.groovyNio)
+    runtimeOnly(projects.groovyLoader)
+
+    testImplementation(projects.buildInit)
+    testImplementation(projects.platformJvm)
+    testImplementation(projects.platformNative)
+    testImplementation(projects.io)
+    testImplementation(projects.testingBase)
     testImplementation(libs.jsoup)
     testImplementation(libs.log4jToSlf4j)
     testImplementation(libs.jclToSlf4j)
 
-    testFixturesApi(project(":base-services")) {
+    testFixturesCompileOnly(libs.jetbrainsAnnotations)
+
+    testFixturesApi(projects.baseServices) {
         because("test fixtures expose Action")
     }
-    testFixturesApi(project(":base-services-groovy")) {
+    testFixturesApi(projects.baseServicesGroovy) {
         because("test fixtures expose AndSpec")
     }
-    testFixturesApi(project(":core-api")) {
+    testFixturesApi(projects.coreApi) {
         because("test fixtures expose Task")
     }
-    testFixturesApi(project(":logging")) {
+    testFixturesApi(projects.logging) {
         because("test fixtures expose Logger")
     }
-    testFixturesApi(project(":model-core")) {
+    testFixturesApi(projects.modelCore) {
         because("test fixtures expose IConventionAware")
     }
-    testFixturesApi(project(":build-cache")) {
+    testFixturesApi(projects.buildCache) {
         because("test fixtures expose BuildCacheController")
     }
-    testFixturesApi(project(":execution")) {
+    testFixturesApi(projects.execution) {
         because("test fixtures expose OutputChangeListener")
     }
-    testFixturesApi(project(":native")) {
+    testFixturesApi(projects.native) {
         because("test fixtures expose FileSystem")
     }
-    testFixturesApi(project(":file-collections")) {
+    testFixturesApi(projects.fileCollections) {
         because("test fixtures expose file collection types")
     }
-    testFixturesApi(project(":file-temp")) {
+    testFixturesApi(projects.fileTemp) {
         because("test fixtures expose temp file types")
     }
-    testFixturesApi(project(":resources")) {
+    testFixturesApi(projects.resources) {
         because("test fixtures expose file resource types")
     }
-    testFixturesApi(project(":process-services")) {
+    testFixturesApi(testFixtures(projects.buildOperations)) {
+        because("test fixtures expose test build operations runner")
+    }
+    testFixturesApi(testFixtures(projects.persistentCache)) {
+        because("test fixtures expose cross-build cache factory")
+    }
+    testFixturesApi(projects.processServices) {
         because("test fixtures expose exec handler types")
     }
-    testFixturesImplementation(project(":messaging"))
-    testFixturesImplementation(project(":persistent-cache"))
-    testFixturesImplementation(project(":snapshots"))
-    testFixturesImplementation(project(":normalization-java"))
+    testFixturesApi(testFixtures(projects.hashing)) {
+        because("test fixtures expose test hash codes")
+    }
+    testFixturesApi(testFixtures(projects.snapshots)) {
+        because("test fixtures expose file snapshot related functionality")
+    }
+    testFixturesApi(testFixtures(projects.serviceRegistryImpl)) {
+        because("test fixtures expose DefaultServiceRegistry")
+    }
+    testFixturesApi(projects.unitTestFixtures) {
+        because("test fixtures expose ProjectBuilder")
+    }
+    testFixturesImplementation(projects.buildOption)
+    testFixturesImplementation(projects.enterpriseOperations)
+    testFixturesImplementation(projects.problemsReporting)
+    testFixturesImplementation(projects.messaging)
+    testFixturesImplementation(projects.normalizationJava)
+    testFixturesImplementation(projects.persistentCache)
+    testFixturesImplementation(projects.snapshots)
+    testFixturesImplementation(projects.ant)
+    testFixturesImplementation(libs.ant)
+    testFixturesImplementation(libs.asm)
+    testFixturesImplementation(libs.guava)
+    testFixturesImplementation(projects.internalInstrumentationApi)
     testFixturesImplementation(libs.ivy)
     testFixturesImplementation(libs.slf4jApi)
-    testFixturesImplementation(libs.guava)
-    testFixturesImplementation(libs.ant)
-    testFixturesImplementation(libs.groovyAnt)
+    testFixturesImplementation(projects.dependencyManagement) {
+        because("Used in VersionCatalogErrorMessages for org.gradle.api.internal.catalog.DefaultVersionCatalogBuilder.getExcludedNames")
+    }
 
-    testFixturesRuntimeOnly(project(":plugin-use")) {
+    testFixturesRuntimeOnly(projects.pluginUse) {
         because("This is a core extension module (see DynamicModulesClassPathProvider.GRADLE_EXTENSION_MODULES)")
     }
-    testFixturesRuntimeOnly(project(":dependency-management")) {
+    testFixturesRuntimeOnly(projects.workers) {
         because("This is a core extension module (see DynamicModulesClassPathProvider.GRADLE_EXTENSION_MODULES)")
     }
-    testFixturesRuntimeOnly(project(":workers")) {
-        because("This is a core extension module (see DynamicModulesClassPathProvider.GRADLE_EXTENSION_MODULES)")
-    }
-    testFixturesRuntimeOnly(project(":composite-builds")) {
+    testFixturesRuntimeOnly(projects.compositeBuilds) {
         because("We always need a BuildStateRegistry service implementation")
     }
 
-    testImplementation(project(":dependency-management"))
+    testImplementation(projects.dependencyManagement)
 
-    testImplementation(testFixtures(project(":core-api")))
-    testImplementation(testFixtures(project(":messaging")))
-    testImplementation(testFixtures(project(":model-core")))
-    testImplementation(testFixtures(project(":logging")))
-    testImplementation(testFixtures(project(":base-services")))
-    testImplementation(testFixtures(project(":diagnostics")))
-    testImplementation(testFixtures(project(":snapshots")))
-    testImplementation(testFixtures(project(":execution")))
+    testImplementation(testFixtures(projects.domainObjectCollections))
+    testImplementation(testFixtures(projects.serialization))
+    testImplementation(testFixtures(projects.coreApi))
+    testImplementation(testFixtures(projects.messaging))
+    testImplementation(testFixtures(projects.modelCore))
+    testImplementation(testFixtures(projects.modelReflect))
+    testImplementation(testFixtures(projects.logging))
+    testImplementation(testFixtures(projects.baseServices))
+    testImplementation(testFixtures(projects.baseDiagnostics))
+    testImplementation(testFixtures(projects.processServices))
+    testImplementation(testFixtures(projects.snapshots))
+    testImplementation(testFixtures(projects.execution))
+    testImplementation(testFixtures(projects.time))
 
-    integTestImplementation(project(":workers"))
-    integTestImplementation(project(":dependency-management"))
-    integTestImplementation(project(":launcher"))
-    integTestImplementation(project(":plugins"))
+    testRuntimeOnly(projects.distributionsCore) {
+        because("This is required by ProjectBuilder, but ProjectBuilder cannot declare :distributions-core as a dependency due to conflicts with other distributions.")
+    }
+
+    integTestImplementation(projects.workers)
+    integTestImplementation(projects.dependencyManagement)
+    integTestImplementation(projects.launcher)
+    integTestImplementation(projects.war)
+    integTestImplementation(projects.daemonServices)
+    integTestImplementation(projects.groovyDsl)
     integTestImplementation(libs.jansi)
     integTestImplementation(libs.jetbrainsAnnotations)
-    integTestImplementation(libs.jetty)
-    integTestImplementation(libs.littleproxy)
-    integTestImplementation(testFixtures(project(":native")))
-    integTestImplementation(testFixtures(project(":file-temp")))
+    integTestImplementation(testLibs.littleproxy)
+    integTestImplementation(testFixtures(projects.domainObjectCollections))
+    integTestImplementation(testFixtures(projects.native))
+    integTestImplementation(testFixtures(projects.fileTemp))
+    integTestImplementation(testFixtures(projects.launcher))
+    integTestImplementation(testFixtures(projects.testingBase))
 
+    integTestDistributionRuntimeOnly(projects.distributionsJvm) {
+        because("Some tests utilise the 'java-gradle-plugin' and with that TestKit, some also use the 'war' plugin")
+    }
 
-    testRuntimeOnly(project(":distributions-core")) {
-        because("ProjectBuilder tests load services from a Gradle distribution.")
+    crossVersionTestImplementation(projects.internalIntegTesting)
+    crossVersionTestImplementation(testLibs.spockJUnit4) {
+        because("Required for @org.junit.Rule")
     }
-    integTestDistributionRuntimeOnly(project(":distributions-basics")) {
-        because("Some tests utilise the 'java-gradle-plugin' and with that TestKit")
+
+    crossVersionTestDistributionRuntimeOnly(projects.distributionsCore)
+
+    annotationProcessor(projects.internalInstrumentationProcessor)
+    annotationProcessor(platform(projects.distributionsDependencies))
+
+    // Javadoc-only: downstream modules whose types are referenced by {@link ...} in this module's docs.
+    javadocReferences(projects.credentials)
+    javadocReferences(projects.buildState)
+}
+
+gradleModule {
+    computedRuntimes {
+        // Auto-generated by `:checkTargetRuntimes --fix`
+        client = true
+        daemon = true
     }
-    crossVersionTestDistributionRuntimeOnly(project(":distributions-core"))
 }
 
 strictCompile {
     ignoreRawTypes() // raw types used in public API
-}
-
-classycle {
-    excludePatterns.add("org/gradle/**")
+    ignoreAnnotationProcessing() // Without this, javac will complain about unclaimed annotations
 }
 
 tasks.test {
     setForkEvery(200)
 }
 
+integTest.testJvmXmx = "1g"
+
 tasks.compileTestGroovy {
-    groovyOptions.fork("memoryInitialSize" to "128M", "memoryMaximumSize" to "1G")
+    groovyOptions.isFork = true
+    groovyOptions.forkOptions.run {
+        memoryInitialSize = "128M"
+        memoryMaximumSize = "1G"
+    }
 }
 
-integTest.usesJavadocCodeSnippets.set(true)
-testFilesCleanup.reportOnly.set(true)
+testFilesCleanup.reportOnly = true

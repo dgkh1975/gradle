@@ -22,12 +22,15 @@ import org.gradle.api.file.ConfigurableFileCollection
 import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.provider.Property
 import org.gradle.api.tasks.CacheableTask
-import org.gradle.api.tasks.Classpath
+import org.gradle.api.tasks.CompileClasspath
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.OutputDirectory
 import org.gradle.api.tasks.TaskAction
-import org.gradle.kotlin.dsl.submit
+// Using star import to workaround https://youtrack.jetbrains.com/issue/KTIJ-24390
+import org.gradle.kotlin.dsl.*
 import org.gradle.workers.WorkerExecutor
+import java.io.File
+import java.util.jar.JarFile
 import javax.inject.Inject
 
 
@@ -36,7 +39,7 @@ abstract class GenerateLanguageAnnotations : DefaultTask() {
     @get:Inject
     abstract val workerExecutor: WorkerExecutor
 
-    @get:Classpath
+    @get:CompileClasspath
     abstract val classpath: ConfigurableFileCollection
 
     @get:Input
@@ -47,12 +50,24 @@ abstract class GenerateLanguageAnnotations : DefaultTask() {
 
     @TaskAction
     fun generateAnnotations() {
-        val queue = workerExecutor.classLoaderIsolation {
-            classpath.setFrom(classpath)
+        val runtimeApiInfo = File(classpath.singleFile, "lib")
+            .listFiles()
+            .find { it.name.startsWith("gradle-runtime-api-info") && it.name.endsWith(".jar") }
+            ?: error("Expected runtime API info jar in distribution")
+
+        // Logic duplicated from [org.gradle.configuration.DefaultImportsReader].
+        // Please keep this code in sync.
+        val defaultImports = JarFile(runtimeApiInfo).use { jar ->
+            jar.getInputStream(jar.getJarEntry("default-imports.txt")).bufferedReader()
+                .readLines()
+                .filter { it.isNotBlank() }
+                .map { line -> line.substring(7, line.length - 2) }
         }
-        queue.submit(AnnotationGeneratorWorkAction::class) {
-            packageName.set(this@GenerateLanguageAnnotations.packageName)
-            destDir.set(this@GenerateLanguageAnnotations.destDir)
-        }
+
+        AnnotationGeneratorWorkAction().execute(
+            packageName.get(),
+            destDir.get().asFile,
+            defaultImports
+        )
     }
 }

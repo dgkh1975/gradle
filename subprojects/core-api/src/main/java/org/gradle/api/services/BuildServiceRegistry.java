@@ -17,7 +17,6 @@
 package org.gradle.api.services;
 
 import org.gradle.api.Action;
-import org.gradle.api.Incubating;
 import org.gradle.api.NamedDomainObjectSet;
 import org.gradle.api.invocation.Gradle;
 import org.gradle.api.provider.Provider;
@@ -29,10 +28,10 @@ import org.gradle.api.provider.Provider;
  *
  * @since 6.1
  */
-@Incubating
 public interface BuildServiceRegistry {
     /**
      * Returns the set of service registrations.
+     * @since 6.1
      */
     NamedDomainObjectSet<BuildServiceRegistration<?, ?>> getRegistrations();
 
@@ -43,6 +42,19 @@ public interface BuildServiceRegistry {
      * @param implementationType The service implementation type. Instances of the service are created as for {@link org.gradle.api.model.ObjectFactory#newInstance(Class, Object...)}.
      * @param configureAction An action to configure the registration. You can use this to provide parameters to the service instance.
      * @return A {@link Provider} that will create the service instance when queried.
+     * @since 6.1
      */
     <T extends BuildService<P>, P extends BuildServiceParameters> Provider<T> registerIfAbsent(String name, Class<T> implementationType, Action<? super BuildServiceSpec<P>> configureAction);
+
+    /**
+     * Registers a service, if a service with the given name is not already registered. The service is not created until required, when the returned {@link Provider} is queried.
+     *
+     * @param name A name to use to identify the service.
+     * @param implementationType The service implementation type. Instances of the service are created as for {@link org.gradle.api.model.ObjectFactory#newInstance(Class, Object...)}.
+     * @return A {@link Provider} that will create the service instance when queried.
+     * @since 8.7
+     */
+    default <T extends BuildService<P>, P extends BuildServiceParameters> Provider<T> registerIfAbsent(String name, Class<T> implementationType) {
+        return registerIfAbsent(name, implementationType, ignore -> {});
+    }
 }

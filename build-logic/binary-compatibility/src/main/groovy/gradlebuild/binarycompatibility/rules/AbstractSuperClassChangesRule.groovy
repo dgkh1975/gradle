@@ -18,7 +18,6 @@ package gradlebuild.binarycompatibility.rules
 
 import japicmp.model.JApiClass
 import japicmp.model.JApiCompatibility
-import japicmp.util.Optional
 import javassist.CtClass
 import me.champeau.gradle.japicmp.report.Violation
 
@@ -28,9 +27,10 @@ abstract class AbstractSuperClassChangesRule extends AbstractGradleViolationRule
 
     private final List<Pattern> publicApiPatterns
 
-    AbstractSuperClassChangesRule(Map params) {
-        super(params['acceptedApiChanges'])
-        this.publicApiPatterns = params['publicApiPatterns'].collect { Pattern.compile(it) }
+    AbstractSuperClassChangesRule(Map<String, Object> params) {
+        super(params)
+        final List<String> publicApiPatterns = (List<String>)params['publicApiPatterns'];
+        this.publicApiPatterns = publicApiPatterns.collect { Pattern.compile(it) }
     }
 
     Violation maybeViolation(final JApiCompatibility member) {

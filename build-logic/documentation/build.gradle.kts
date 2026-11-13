@@ -3,20 +3,29 @@ plugins {
     id("gradlebuild.build-logic.groovy-dsl-gradle-plugin")
 }
 
-dependencies {
-    implementation(project(":basics"))
-    implementation(project(":module-identity"))
+description = "Provides a plugin to generate Gradle's DSL reference, User Manual and Javadocs"
 
-    implementation("com.github.javaparser:javaparser-core")
-    implementation("com.google.guava:guava")
-    implementation("com.uwyn:jhighlight") {
+dependencies {
+    implementation("gradlebuild:basics")
+    implementation("gradlebuild:module-identity")
+
+    implementation(projects.buildUpdateUtils)
+
+    implementation(buildLibs.javaParserCore)
+    implementation(buildLibs.guava)
+    implementation(buildLibs.jhighlight) {
         exclude(module = "servlet-api")
     }
-    implementation("com.vladsch.flexmark:flexmark-all")
-    implementation("commons-lang:commons-lang")
-    implementation("org.asciidoctor:asciidoctor-gradle-jvm")
-    implementation("org.asciidoctor:asciidoctorj")
-    implementation("org.asciidoctor:asciidoctorj-pdf")
+    implementation(buildLibs.flexmark)
+    implementation(buildLibs.gson)
+    implementation(buildLibs.commonsLang3)
+    implementation(buildLibs.asciidoctor)
+    implementation(buildLibs.asciidoctorJvm)
+    implementation(platform(buildLibs.nettyBom))
+    implementation(buildLibs.dokkaPlugin)
+    implementation(buildLibs.jspecify)
+
+    testImplementation(gradleTestKit())
 }
 
 gradlePlugin {
@@ -24,6 +33,10 @@ gradlePlugin {
         register("gradleDocumentation") {
             id = "gradlebuild.documentation"
             implementationClass = "gradlebuild.docs.GradleBuildDocumentationPlugin"
+        }
+        register("gradleSnippetsTesting") {
+            id = "gradlebuild.docs-snippets-testing"
+            implementationClass = "gradlebuild.docs.GradleSnippetsTestingPlugin"
         }
     }
 }

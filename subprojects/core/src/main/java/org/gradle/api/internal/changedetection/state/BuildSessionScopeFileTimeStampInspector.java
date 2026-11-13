@@ -17,8 +17,9 @@
 package org.gradle.api.internal.changedetection.state;
 
 import org.gradle.initialization.RootBuildLifecycleListener;
-import org.gradle.internal.service.scopes.Scopes;
+import org.gradle.internal.service.scopes.Scope;
 import org.gradle.internal.service.scopes.ServiceScope;
+import org.jspecify.annotations.Nullable;
 
 import java.io.File;
 
@@ -27,7 +28,7 @@ import java.io.File;
  *
  * There is no additional logic apart from what is also in {@link FileTimeStampInspector}.
  */
-@ServiceScope(Scopes.BuildSession.class)
+@ServiceScope(Scope.BuildSession.class)
 public class BuildSessionScopeFileTimeStampInspector extends FileTimeStampInspector implements RootBuildLifecycleListener {
     public BuildSessionScopeFileTimeStampInspector(File workDir) {
         super(workDir);
@@ -44,7 +45,7 @@ public class BuildSessionScopeFileTimeStampInspector extends FileTimeStampInspec
     }
 
     @Override
-    public void beforeComplete() {
+    public void beforeComplete(@Nullable Throwable failure) {
         updateOnFinishBuild();
     }
 }

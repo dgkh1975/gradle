@@ -2,16 +2,24 @@ plugins {
     id("gradlebuild.build-logic.kotlin-dsl-gradle-plugin")
 }
 
+description = "Provides a plugin for building Gradle distributions"
+
 dependencies {
-    implementation(project(":documentation")) {
+    implementation("gradlebuild:basics")
+    implementation("gradlebuild:module-identity")
+
+    implementation(projects.documentation) {
         // TODO turn this around: move corresponding code to this project and let docs depend on it
         because("API metadata generation is part of the DSL guide")
     }
-    implementation(project(":basics"))
-    implementation(project(":module-identity"))
-    implementation(project(":jvm"))
+    implementation(projects.dependencyModules)
+    implementation(projects.jvm)
+    implementation(projects.kotlinDsl)
 
-    implementation("com.google.code.gson:gson")
+    implementation(buildLibs.kotlinGradlePlugin)
 
-    testImplementation("org.junit.jupiter:junit-jupiter")
+    implementation(buildLibs.gson)
+    implementation(libs.asm)
+    implementation(libs.maven3Model)
+
 }

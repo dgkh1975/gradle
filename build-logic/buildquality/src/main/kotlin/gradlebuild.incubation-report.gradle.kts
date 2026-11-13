@@ -14,30 +14,32 @@
  * limitations under the License.
  */
 
-import gradlebuild.basics.accessors.groovy
-import gradlebuild.basics.accessors.kotlin
+import gradlebuild.basics.accessors.kotlinMainSourceSet
+import gradlebuild.basics.capitalize
+import gradlebuild.basics.releasedVersionsFile
 import gradlebuild.basics.repoRoot
 import gradlebuild.incubation.tasks.IncubatingApiReportTask
 
 plugins {
     java
+    groovy
 }
 
 val reportTask = tasks.register<IncubatingApiReportTask>("incubationReport") {
     group = "verification"
     description = "Generates a report of incubating APIS"
-    title.set(project.name)
-    versionFile.set(repoRoot().file("version.txt"))
-    releasedVersionsFile.set(repoRoot().file("released-versions.json"))
+    title = project.name
+    versionFile = repoRoot().file("version.txt")
+    releasedVersionsFile = releasedVersionsFile()
     sources.from(sourceSets.main.get().java.sourceDirectories)
     sources.from(sourceSets.main.get().groovy.sourceDirectories)
-    htmlReportFile.set(file(layout.buildDirectory.file("reports/incubation/${project.name}.html")))
-    textReportFile.set(file(layout.buildDirectory.file("reports/incubation/${project.name}.txt")))
+    htmlReportFile = file(layout.buildDirectory.file("reports/incubation/${project.name}.html"))
+    textReportFile = file(layout.buildDirectory.file("reports/incubation/${project.name}.txt"))
 }
 
 plugins.withId("org.jetbrains.kotlin.jvm") {
     reportTask {
-        sources.from(sourceSets.main.get().kotlin.sourceDirectories)
+        sources.from(kotlinMainSourceSet.sourceDirectories)
     }
 }
 
@@ -47,7 +49,6 @@ consumableVariant("txt", reportTask.flatMap { it.textReportFile })
 consumableVariant("html", reportTask.flatMap { it.htmlReportFile })
 
 fun consumableVariant(reportType: String, artifact: Provider<RegularFile>) = configurations.create("incubatingReport${reportType.capitalize()}") {
-    isVisible = false
     isCanBeResolved = false
     isCanBeConsumed = true
     attributes {
@@ -55,6 +56,9 @@ fun consumableVariant(reportType: String, artifact: Provider<RegularFile>) = con
         attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.DOCUMENTATION))
         attribute(DocsType.DOCS_TYPE_ATTRIBUTE, objects.named("incubation-report-$reportType"))
     }
+    // TODO(mlopatkin): extending `implementation` mirrors `runtimeElements` incompletely (it misses `runtimeOnly`),
+    //  so consumers do not see projects such as :problems. Drop the extendsFrom and have consumers reselect this
+    //  variant over the runtime graph instead, as gradlebuild.package-info-data.gradle.kts does.
     extendsFrom(configurations.implementation.get())
     outgoing.artifact(artifact)
 }

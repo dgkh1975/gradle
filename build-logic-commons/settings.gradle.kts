@@ -14,12 +14,44 @@
  * limitations under the License.
  */
 
+pluginManagement {
+    includeBuild("../build-logic-settings")
+}
+
 dependencyResolutionManagement {
     repositories {
         gradlePluginPortal()
     }
 }
 
-include("code-quality")
+plugins {
+    id("gradlebuild.version-catalogs")
+    id("gradlebuild.default-settings-plugins")
+}
+
+includeBuild("../build-logic-settings")
+
+apply(from = "../gradle/shared-with-buildSrc/mirrors.settings.gradle.kts")
+
+// Shared basics for all
+include("basics")
+
+// Platform: defines shared dependency versions
+include("build-platform")
+
+// Plugin that applies the build-platform constraints
+include("build-platform-plugin")
+
+// Compute the identity/version we are building and related details (like current git commit)
+include("module-identity")
+
+// Code quality rules common to :build-logic and the root build
 include("code-quality-rules")
+
+// Plugins to build :build-logic plugins
 include("gradle-plugin")
+
+// Plugins to publish gradle projects
+include("publishing")
+
+rootProject.name = "build-logic-commons"

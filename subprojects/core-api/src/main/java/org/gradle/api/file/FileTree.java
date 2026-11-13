@@ -16,8 +16,10 @@
 package org.gradle.api.file;
 
 import groovy.lang.Closure;
+import groovy.lang.DelegatesTo;
 import org.gradle.api.Action;
 import org.gradle.api.tasks.util.PatternFilterable;
+import org.gradle.declarative.dsl.model.annotations.HiddenInDefinition;
 import org.gradle.internal.HasInternalProtocol;
 
 import java.io.File;
@@ -33,8 +35,10 @@ import java.util.Set;
  * </p>
  *
  * <p>The order of the files in a {@code FileTree} is not stable, even on a single computer.
+ * @since 0.8
  */
 @HasInternalProtocol
+@HiddenInDefinition
 public interface FileTree extends FileCollection {
     /**
      * <p>Restricts the contents of this tree to those files matching the given filter. The filtered tree is live, so
@@ -47,8 +51,9 @@ public interface FileTree extends FileCollection {
      *
      * @param filterConfigClosure the closure to use to configure the filter.
      * @return The filtered tree.
+     * @since 0.8
      */
-    FileTree matching(Closure filterConfigClosure);
+    FileTree matching(@DelegatesTo(PatternFilterable.class) Closure filterConfigClosure);
 
     /**
      * <p>Restricts the contents of this tree to those files matching the given filter. The filtered tree is live, so
@@ -75,6 +80,7 @@ public interface FileTree extends FileCollection {
      *
      * @param patterns the pattern set to use to configure the filter.
      * @return The filtered tree.
+     * @since 0.8
      */
     FileTree matching(PatternFilterable patterns);
 
@@ -84,6 +90,7 @@ public interface FileTree extends FileCollection {
      *
      * @param visitor The visitor.
      * @return this
+     * @since 0.8
      */
     FileTree visit(FileVisitor visitor);
 
@@ -94,8 +101,9 @@ public interface FileTree extends FileCollection {
      *
      * @param visitor The visitor.
      * @return this
+     * @since 0.8
      */
-    FileTree visit(Closure visitor);
+    FileTree visit(@DelegatesTo(FileVisitDetails.class) Closure visitor);
 
     /**
      * Visits the files and directories in this file tree. Files are visited in depth-first prefix order, so that a directory
@@ -104,6 +112,7 @@ public interface FileTree extends FileCollection {
      *
      * @param visitor The visitor.
      * @return this
+     * @since 3.3
      */
     FileTree visit(Action<? super FileVisitDetails> visitor);
 
@@ -113,6 +122,7 @@ public interface FileTree extends FileCollection {
      *
      * @param fileTree The tree. Should not be null.
      * @return The union of this tree and the given tree.
+     * @since 0.8
      */
     FileTree plus(FileTree fileTree);
 

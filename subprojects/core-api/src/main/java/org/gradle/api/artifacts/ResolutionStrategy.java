@@ -17,6 +17,10 @@
 package org.gradle.api.artifacts;
 
 import org.gradle.api.Action;
+import org.gradle.api.artifacts.component.ModuleComponentSelector;
+import org.gradle.api.provider.Property;
+import org.gradle.api.provider.Provider;
+import org.gradle.api.provider.ProviderConvertible;
 
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -26,7 +30,7 @@ import java.util.concurrent.TimeUnit;
  * For example, forcing certain dependency versions, substitutions, conflict resolutions or snapshot timeouts.
  * <p>
  * Examples:
- * <pre class='autoTested'>
+ * <pre>
  * plugins {
  *     id 'java' // so that there are some configurations
  * }
@@ -60,7 +64,7 @@ import java.util.concurrent.TimeUnit;
  * }
  * </pre>
  *
- * @since 1.0-milestone-6
+ * @since 1.0
  */
 public interface ResolutionStrategy {
 
@@ -81,7 +85,7 @@ public interface ResolutionStrategy {
      * </pre>
      *
      * @return this resolution strategy instance
-     * @since 1.0-milestone-6
+     * @since 1.0
      */
     ResolutionStrategy failOnVersionConflict();
 
@@ -144,7 +148,7 @@ public interface ResolutionStrategy {
 
     /**
      * Activates dependency locking support in Gradle.
-     * Once turned on on a configuration, resolution result can be saved and then reused for subsequent builds.
+     * Once turned on a configuration, resolution result can be saved and then reused for subsequent builds.
      * This enables reproducible builds when using dynamic versions.
      *
      * @return this resolution strategy instance
@@ -182,10 +186,14 @@ public interface ResolutionStrategy {
      * Allows forcing certain versions of dependencies, including transitive dependencies.
      * <b>Appends</b> new forced modules to be considered when resolving dependencies.
      * <p>
-     * It accepts following notations:
+     * It accepts the following notations:
      * <ul>
      *   <li>String in a format of: 'group:name:version', for example: 'org.gradle:gradle-core:1.0'</li>
-     *   <li>instance of {@link ModuleVersionSelector}</li>
+     *   <li>Map with keys 'group', 'name' and 'version'; for example: [group: 'org.gradle', name: 'gradle-core', version: '1.0']</li>
+     *   <li>{@link Provider} and {@link ProviderConvertible} of {@link MinimalExternalModuleDependency}</li>
+     *   <li>instance of {@link ExternalDependency}</li>
+     *   <li>instance of {@link ModuleComponentSelector}</li>
+     *   <li>instance of {@link ModuleVersionSelector} (deprecated)</li>
      *   <li>any collection or array of above will be automatically flattened</li>
      * </ul>
      * Example:
@@ -199,11 +207,11 @@ public interface ResolutionStrategy {
      * }
      * </pre>
      *
-     * @param moduleVersionSelectorNotations typically group:name:version notations to append
+     * @param notations typically group:name:version notations to append
      * @return this ResolutionStrategy instance
-     * @since 1.0-milestone-7
+     * @since 1.0
      */
-    ResolutionStrategy force(Object... moduleVersionSelectorNotations);
+    ResolutionStrategy force(Object... notations);
 
     /**
      * Allows forcing certain versions of dependencies, including transitive dependencies.
@@ -224,7 +232,7 @@ public interface ResolutionStrategy {
      *
      * @param moduleVersionSelectorNotations typically group:name:version notations to set
      * @return this ResolutionStrategy instance
-     * @since 1.0-milestone-7
+     * @since 1.0
      */
     ResolutionStrategy setForcedModules(Object... moduleVersionSelectorNotations);
 
@@ -232,7 +240,7 @@ public interface ResolutionStrategy {
      * Returns currently configured forced modules. For more information on forcing versions see {@link #force(Object...)}
      *
      * @return forced modules
-     * @since 1.0-milestone-7
+     * @since 1.0
      */
     Set<ModuleVersionSelector> getForcedModules();
 
@@ -276,7 +284,7 @@ public interface ResolutionStrategy {
      *
      * @param value The number of time units
      * @param units The units
-     * @since 1.0-milestone-6
+     * @since 1.0
      */
     void cacheDynamicVersionsFor(int value, String units);
 
@@ -289,7 +297,7 @@ public interface ResolutionStrategy {
      *
      * @param value The number of time units
      * @param units The units
-     * @since 1.0-milestone-6
+     * @since 1.0
      */
     void cacheDynamicVersionsFor(int value, TimeUnit units);
 
@@ -301,7 +309,7 @@ public interface ResolutionStrategy {
      *
      * @param value The number of time units
      * @param units The units
-     * @since 1.0-milestone-6
+     * @since 1.0
      */
     void cacheChangingModulesFor(int value, String units);
 
@@ -314,7 +322,7 @@ public interface ResolutionStrategy {
      *
      * @param value The number of time units
      * @param units The units
-     * @since 1.0-milestone-6
+     * @since 1.0
      */
     void cacheChangingModulesFor(int value, TimeUnit units);
 
@@ -367,6 +375,20 @@ public interface ResolutionStrategy {
     ResolutionStrategy dependencySubstitution(Action<? super DependencySubstitutions> action);
 
     /**
+     * Gradle implicitly registers dependency substitution rules for all configurations in the whole build
+     * tree to find projects in other included builds. These rules are always active by default.
+     *
+     * There are however cases, where a certain configuration should not apply these rules when resolving.
+     * For example, if a binary version of a module should be discovered that is also represented by
+     * a project in another build.
+     *
+     * This property may be used to deactivate these global substitution rules.
+     *
+     * @since 7.4
+     */
+    Property<Boolean> getUseGlobalDependencySubstitutionRules();
+
+    /**
      * Specifies the ordering for resolved artifacts. Options are:
      * <ul>
      * <li>{@link SortOrder#DEFAULT} : Don't specify the sort order. Gradle will provide artifacts in the default order.</li>
@@ -405,6 +427,17 @@ public interface ResolutionStrategy {
      * @since 3.5
      */
     enum SortOrder {
-        DEFAULT, CONSUMER_FIRST, DEPENDENCY_FIRST
+        /**
+         * @since 3.5
+         */
+        DEFAULT,
+        /**
+         * @since 3.5
+         */
+        CONSUMER_FIRST,
+        /**
+         * @since 3.5
+         */
+        DEPENDENCY_FIRST
     }
 }

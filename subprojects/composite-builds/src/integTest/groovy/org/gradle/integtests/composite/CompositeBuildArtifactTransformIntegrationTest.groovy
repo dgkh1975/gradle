@@ -16,7 +16,7 @@
 
 package org.gradle.integtests.composite
 
-import org.gradle.test.fixtures.file.TestFile
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
 
 class CompositeBuildArtifactTransformIntegrationTest extends AbstractCompositeBuildIntegrationTest {
 
@@ -67,7 +67,7 @@ class CompositeBuildArtifactTransformIntegrationTest extends AbstractCompositeBu
                 inputs.files artifacts.artifactFiles
                 doLast {
                     artifacts.each {
-                        println "Transformed artifact: \$it, location: \${it.file.absolutePath}"
+                        println "Transformed artifact: \${it.file.name} (\${it.id.componentIdentifier}), location: \${it.file.absolutePath}"
                     }
                 }
             }
@@ -77,12 +77,13 @@ class CompositeBuildArtifactTransformIntegrationTest extends AbstractCompositeBu
         assertTaskExecuted(":buildB", ":jar")
         assertTaskExecuted(":buildC", ":jar")
 
-        outputContains("Transformed artifact: buildB-1.0.jar.xform (project :buildB), location: ${expectedWorkspaceLocation(buildB)}")
-        outputContains("Transformed artifact: buildC-1.0.jar.xform (project :buildC), location: ${expectedWorkspaceLocation(buildC)}")
+        outputContains("Transformed artifact: buildB-1.0.jar.xform (project ':buildB')")
+        outputContains("Transformed artifact: buildC-1.0.jar.xform (project ':buildC')")
         output.count("Transforming") == 2
     }
 
-    def "cross-build dependency with with transform in another build"() {
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
+    def "cross-build dependency with transform in another build"() {
         given:
         def buildB = multiProjectBuild('buildB', ['app', 'lib'])
         buildB.buildFile << """
@@ -135,10 +136,5 @@ class CompositeBuildArtifactTransformIntegrationTest extends AbstractCompositeBu
         assertTaskExecuted(':buildB', ':lib:jar')
         assertTaskExecuted(':buildB', ':app:resolve')
         assertTaskExecuted(':', ':run')
-    }
-
-
-    private String expectedWorkspaceLocation(TestFile includedBuild) {
-        includedBuild.file("build/.transforms")
     }
 }

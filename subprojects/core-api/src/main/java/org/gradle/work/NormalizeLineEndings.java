@@ -16,8 +16,6 @@
 
 package org.gradle.work;
 
-import org.gradle.api.Incubating;
-
 import java.lang.annotation.Documented;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -34,6 +32,8 @@ import java.lang.annotation.Target;
  * and will not be subject to line ending normalization.
  *
  * <p>This annotation should be attached to the getter method in Java or the property in Groovy.
+ * In Kotlin, use the {@code get:} use-site target to attach it to the property getter, for example {@code @get:NormalizeLineEndings}.
+ * This also works on abstract properties, where the annotation without a use-site target does not compile.
  * Annotations on setters or just the field in Java are ignored.</p>
  *
  * This annotation can be applied to the following input property types:
@@ -52,7 +52,6 @@ import java.lang.annotation.Target;
  *
  * @since 7.2
  */
-@Incubating
 @Documented
 @Retention(RetentionPolicy.RUNTIME)
 @Target({ElementType.METHOD, ElementType.FIELD})

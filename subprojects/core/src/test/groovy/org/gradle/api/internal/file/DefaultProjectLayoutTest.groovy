@@ -17,8 +17,9 @@
 package org.gradle.api.internal.file
 
 import org.gradle.api.internal.provider.PropertyHost
+import org.gradle.api.provider.Provider
 import org.gradle.api.internal.tasks.TaskDependencyFactory
-import org.gradle.internal.Factory
+import org.gradle.api.tasks.util.internal.PatternSetFactory
 import org.gradle.test.fixtures.file.TestFile
 import org.gradle.test.fixtures.file.TestNameTestDirectoryProvider
 import org.junit.Rule
@@ -32,16 +33,43 @@ class DefaultProjectLayoutTest extends Specification {
     @Rule
     TestNameTestDirectoryProvider tmpDir = new TestNameTestDirectoryProvider(getClass())
     TestFile projectDir
+    TestFile settingsDir
     DefaultProjectLayout layout
 
     def setup() {
         projectDir = tmpDir.createDir("project")
-        layout = new DefaultProjectLayout(projectDir, TestFiles.resolver(projectDir), Stub(TaskDependencyFactory), Stub(Factory), Stub(PropertyHost), TestFiles.fileCollectionFactory(projectDir), TestFiles.filePropertyFactory(projectDir), TestFiles.fileFactory())
+        settingsDir = tmpDir.testDirectory
+        layout = new DefaultProjectLayout(settingsDir, projectDir, TestFiles.resolver(projectDir), Stub(TaskDependencyFactory), Stub(PatternSetFactory), Stub(PropertyHost), TestFiles.fileCollectionFactory(projectDir), TestFiles.filePropertyFactory(projectDir), TestFiles.fileFactory())
+    }
+
+    def "can query the settings directory"() {
+        expect:
+        layout.settingsDirectory.getAsFile() == settingsDir
     }
 
     def "can query the project directory"() {
         expect:
         layout.projectDirectory.getAsFile() == projectDir
+    }
+
+    def "can resolve directory relative to settings directory"() {
+        def pathProvider = withValues("a", "b")
+
+        expect:
+        def dir = layout.settingsDirectory.dir("sub-dir")
+        dir.getAsFile() == settingsDir.file("sub-dir")
+
+        def provider = layout.settingsDirectory.dir(pathProvider)
+        provider.present
+
+        def dir1 = provider.get()
+        dir1.getAsFile() == settingsDir.file("a")
+
+        def dir2 = provider.get()
+        dir2.getAsFile() == settingsDir.file("b")
+
+        dir1.getAsFile() == settingsDir.file("a")
+        dir2.getAsFile() == settingsDir.file("b")
     }
 
     def "can resolve directory relative to project directory"() {
@@ -64,6 +92,26 @@ class DefaultProjectLayoutTest extends Specification {
         dir2.getAsFile() == projectDir.file("b")
     }
 
+    def "can resolve regular file relative to settings directory"() {
+        def pathProvider = withValues("a", "b")
+
+        expect:
+        def file = layout.settingsDirectory.file("child")
+        file.getAsFile() == settingsDir.file("child")
+
+        def provider = layout.settingsDirectory.file(pathProvider)
+        provider.present
+
+        def file1 = provider.get()
+        file1.getAsFile() == settingsDir.file("a")
+
+        def file2 = provider.get()
+        file2.getAsFile() == settingsDir.file("b")
+
+        file1.getAsFile() == settingsDir.file("a")
+        file2.getAsFile() == settingsDir.file("b")
+    }
+
     def "can resolve regular file relative to project directory"() {
         def pathProvider = withValues("a", "b")
 
@@ -84,7 +132,16 @@ class DefaultProjectLayoutTest extends Specification {
         file2.getAsFile() == projectDir.file("b")
     }
 
-    def "directory is not present when path provider is not present"() {
+    def "settings directory is not present when path provider is not present"() {
+        def pathProvider = withNoValue()
+
+        expect:
+        def provider = layout.settingsDirectory.dir(pathProvider)
+        !provider.present
+        provider.getOrNull() == null
+    }
+
+    def "project directory is not present when path provider is not present"() {
         def pathProvider = withNoValue()
 
         expect:
@@ -93,7 +150,16 @@ class DefaultProjectLayoutTest extends Specification {
         provider.getOrNull() == null
     }
 
-    def "regular file is not present when path provider is not present"() {
+    def "settings file is not present when path provider is not present"() {
+        def pathProvider = withNoValue()
+
+        expect:
+        def provider = layout.settingsDirectory.file(pathProvider)
+        !provider.present
+        provider.getOrNull() == null
+    }
+
+    def "project file is not present when path provider is not present"() {
         def pathProvider = withNoValue()
 
         expect:
@@ -102,7 +168,22 @@ class DefaultProjectLayoutTest extends Specification {
         provider.getOrNull() == null
     }
 
-    def "can view directory as a file tree"() {
+    def "can view settings directory as a file tree"() {
+        def dir1 = settingsDir.createDir("dir1")
+        def file1 = dir1.createFile("sub-dir/file1")
+        def file2 = dir1.createFile("file2")
+        def dir2 = settingsDir.createDir("dir2")
+        def file3 = dir2.createFile("other/file3")
+
+        expect:
+        def tree1 = layout.settingsDirectory.dir("dir1").asFileTree
+        tree1.files == [file1, file2] as Set
+
+        def tree2 = layout.settingsDirectory.dir("dir2").asFileTree
+        tree2.files == [file3] as Set
+    }
+
+    def "can view project directory as a file tree"() {
         def dir1 = projectDir.createDir("dir1")
         def file1 = dir1.createFile("sub-dir/file1")
         def file2 = dir1.createFile("file2")
@@ -129,7 +210,7 @@ class DefaultProjectLayoutTest extends Specification {
         def dir1 = buildDirectory.get()
         dir1.getAsFile() == projectDir.file("build")
 
-        layout.setBuildDirectory("other")
+        layout.buildDirectory.set(projectDir.file("other"))
         buildDirectory.present
         fileProvider.present
         fileProvider.get() == projectDir.file("other")
@@ -137,7 +218,7 @@ class DefaultProjectLayoutTest extends Specification {
         def dir2 = buildDirectory.get()
         dir2.getAsFile() == projectDir.file("other")
 
-        layout.setBuildDirectory("../target")
+        layout.buildDirectory.set(projectDir.file("../target"))
         buildDirectory.present
         fileProvider.present
         fileProvider.get() == tmpDir.file("target")
@@ -177,7 +258,7 @@ class DefaultProjectLayoutTest extends Specification {
     }
 
     def "can resolve directory relative to build directory"() {
-        def pathProvider = withValues("a", "b")
+        def pathProvider = withValues("a", "b", "c")
 
         expect:
         def dir = layout.buildDirectory.dir("sub-dir")
@@ -188,17 +269,17 @@ class DefaultProjectLayoutTest extends Specification {
         provider.present
 
         def dir1 = provider.get()
-        dir1.getAsFile() == projectDir.file("build/a")
+        dir1.getAsFile() == projectDir.file("build/b")
 
         def dir2 = provider.get()
-        dir2.getAsFile() == projectDir.file("build/b")
+        dir2.getAsFile() == projectDir.file("build/c")
 
-        dir1.getAsFile() == projectDir.file("build/a")
-        dir2.getAsFile() == projectDir.file("build/b")
+        dir1.getAsFile() == projectDir.file("build/b")
+        dir2.getAsFile() == projectDir.file("build/c")
     }
 
     def "can resolve regular file relative to build directory"() {
-        def pathProvider = withValues("a", "b")
+        def pathProvider = withValues("a", "b", "c")
 
         expect:
         def file = layout.buildDirectory.file("child")
@@ -209,13 +290,13 @@ class DefaultProjectLayoutTest extends Specification {
         provider.present
 
         def file1 = provider.get()
-        file1.getAsFile() == projectDir.file("build/a")
+        file1.getAsFile() == projectDir.file("build/b")
 
         def file2 = provider.get()
-        file2.getAsFile() == projectDir.file("build/b")
+        file2.getAsFile() == projectDir.file("build/c")
 
-        file1.getAsFile() == projectDir.file("build/a")
-        file2.getAsFile() == projectDir.file("build/b")
+        file1.getAsFile() == projectDir.file("build/b")
+        file2.getAsFile() == projectDir.file("build/c")
     }
 
     def "directories are equal when their paths are equal"() {
@@ -290,5 +371,17 @@ class DefaultProjectLayoutTest extends Specification {
 
         provider.get().getAsFile() == dir1
         provider.get().getAsFile() == dir2
+    }
+
+    def "cannot resolve #method using a null provider"() {
+        when:
+        layout."$method"((Provider) null)
+
+        then:
+        def e = thrown(NullPointerException)
+        e.message == "Cannot resolve a path using a null provider."
+
+        where:
+        method << ["file", "dir"]
     }
 }

@@ -13,96 +13,66 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-import java.io.FileOutputStream
-import java.nio.charset.StandardCharsets
-import java.nio.file.Files
-import java.nio.file.LinkOption
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
+import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 plugins {
     id("java-library")
     id("org.gradle.kotlin.kotlin-dsl") // this is 'kotlin-dsl' without version
+    id("gradlebuild.build-platform")
     id("gradlebuild.code-quality")
-    id("gradlebuild.ktlint")
+    id("gradlebuild.detekt")
+    id("gradlebuild.ci-reporting")
+    id("gradlebuild.test-retry")
+    id("gradlebuild.private-javadoc")
 }
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
-}
+val buildLibs = project.versionCatalogs.named("buildLibs")
 
 dependencies {
-    api(platform(project(":build-platform")))
-    implementation("gradlebuild:code-quality")
-
-    testImplementation("org.junit.vintage:junit-vintage-engine")
+    implementation("gradlebuild:gradle-plugin")
 }
 
-ktlint {
-    filter {
-        exclude("gradle/kotlin/dsl/accessors/_*/**")
+@Suppress("UnstableApiUsage")
+testing {
+    suites {
+        named<JvmTestSuite>("test") {
+            useJUnitJupiter(buildLibs.findVersion("junit").get().requiredVersion)
+        }
     }
 }
 
-tasks.runKtlintCheckOverKotlinScripts {
-    // Only check the build files, not all *.kts files in the project
-    setIncludes(listOf("*.gradle.kts"))
+// When groovy-dsl is also applied, switch to Spock (which runs Jupiter tests too).
+// Also add Jupiter API so mixed Kotlin/Jupiter + Groovy/Spock projects compile.
+pluginManager.withPlugin("groovy-gradle-plugin") {
+    @Suppress("UnstableApiUsage")
+    testing {
+        suites {
+            named<JvmTestSuite>("test") {
+                useSpock(buildLibs.findVersion("spock").get().requiredVersion)
+                dependencies {
+                    implementation(buildLibs.findLibrary("junitJupiter").get())
+                }
+            }
+        }
+    }
 }
 
-tasks.codeQuality {
-    dependsOn(tasks.ktlintCheck)
+tasks.withType<KotlinCompile>().configureEach {
+    compilerOptions {
+        allWarningsAsErrors = true
+    }
+}
+
+detekt {
+    // overwrite the config file's location
+    config.convention(project.isolated.rootProject.projectDirectory.file("../gradle/detekt.yml"))
+}
+
+tasks.named("codeQuality") {
+    dependsOn("detekt")
 }
 
 tasks.validatePlugins {
-    failOnWarning.set(true)
-    enableStricterValidation.set(true)
-}
-
-
-val isCiServer = "CI" in System.getenv()
-
-if (isCiServer && project.name != "gradle-kotlin-dsl-accessors") {
-    gradle.buildFinished {
-        failedTasks().forEach { prepareReportForCIPublishing(it.reports["html"].outputLocation.get().asFile) }
-    }
-}
-
-fun failedTasks() = gradle.taskGraph.allTasks.filter {
-    it.project == project && it is Reporting<*> && it.state.failure != null
-}.map { it as Reporting<*> }
-
-fun zip(destZip: File, srcDir: File) {
-    destZip.parentFile.mkdirs()
-    ZipOutputStream(FileOutputStream(destZip), StandardCharsets.UTF_8).use { zipOutput ->
-        val srcPath = srcDir.toPath()
-        Files.walk(srcPath).use { paths ->
-            paths
-                .filter { Files.isRegularFile(it, LinkOption.NOFOLLOW_LINKS) }
-                .forEach { path ->
-                    val zipEntry = ZipEntry(srcPath.relativize(path).toString())
-                    zipOutput.putNextEntry(zipEntry)
-                    Files.copy(path, zipOutput)
-                    zipOutput.closeEntry()
-                }
-        }
-    }
-}
-
-fun prepareReportForCIPublishing(report: File) {
-    if (report.isDirectory) {
-        val destFile = layout.buildDirectory.file("report-${project.name}-${report.name}.zip").get().asFile
-        zip(destFile, report)
-    } else {
-        copy {
-            from(report)
-            into(layout.buildDirectory)
-            rename { "report-${project.name}-${report.parentFile.name}-${report.name}" }
-        }
-    }
-}
-
-tasks.withType<Test>().configureEach {
-    useJUnitPlatform()
+    failOnWarning = true
+    enableStricterValidation = true
 }

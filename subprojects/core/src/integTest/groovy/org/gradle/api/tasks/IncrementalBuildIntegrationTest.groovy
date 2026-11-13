@@ -15,12 +15,11 @@
  */
 package org.gradle.api.tasks
 
+import org.gradle.api.problems.Severity
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import org.gradle.integtests.fixtures.DirectoryBuildCacheFixture
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
-import org.gradle.internal.reflect.problems.ValidationProblemId
+import org.gradle.integtests.fixtures.modes.UnsupportedWithConfigurationCache
 import org.gradle.internal.reflect.validation.ValidationMessageChecker
-import org.gradle.internal.reflect.validation.ValidationTestFor
 import org.gradle.test.fixtures.file.TestFile
 import org.gradle.util.internal.ToBeImplemented
 import spock.lang.Issue
@@ -74,64 +73,57 @@ public class DirTransformerTask extends DefaultTask {
 import org.gradle.api.*
 import org.gradle.api.tasks.*
 
-public class TransformerTask extends DefaultTask {
-    private File inputFile
-    private File outputFile
-    private String format = "[%s]"
-
+public abstract class TransformerTask extends DefaultTask {
     @InputFile
-    public File getInputFile() {
-        return inputFile
-    }
-
-    public void setInputFile(File inputFile) {
-        this.inputFile = inputFile
-    }
+    public abstract RegularFileProperty getInputFile()
 
     @OutputFile
-    public File getOutputFile() {
-        return outputFile
-    }
-
-    public void setOutputFile(File outputFile) {
-        this.outputFile = outputFile
-    }
+    public abstract RegularFileProperty getOutputFile()
 
     @Input
-    public String getFormat() {
-        return format
-    }
+    public abstract Property<String> getFormat()
 
-    public void setFormat(String format) {
-        this.format = format
+    TransformerTask() {
+        format.convention("[%s]")
     }
 
     @TaskAction
     public void transform() {
-        outputFile.text = String.format(format, inputFile.text)
+        outputFile.get().asFile.text = String.format(format.get(), inputFile.get().asFile.text)
     }
 }
 '''
     }
 
-    @ToBeFixedForConfigurationCache(because = "task wrongly up-to-date")
     def "skips task when output file is up-to-date"() {
         writeTransformerTask()
 
-        buildFile << '''
-task a(type: TransformerTask) {
-    inputFile = file('src.txt')
-    outputFile = file('src.a.txt')
-}
-task b(type: TransformerTask, dependsOn: a) {
-    inputFile = a.outputFile
-    outputFile = file('src.b.txt')
-}
-// Use a separate build script to avoid invalidating task implementations
-apply from: 'changes.gradle'
-'''
-        def changesFile = file('changes.gradle').createFile()
+        // Use Gradle properties to control task configuration so that CC is properly
+        // invalidated when configuration changes (applied scripts are not tracked by CC)
+        buildFile """
+            def aInputPath = providers.gradleProperty('aInput').getOrElse('src.txt')
+            def aOutputPath = providers.gradleProperty('aOutput').getOrElse('src.a.txt')
+            def bOutputPath = providers.gradleProperty('bOutput').getOrElse('src.b.txt')
+            def aFormatVal = providers.gradleProperty('aFormat').getOrElse('[%s]')
+            def bInputOverride = providers.gradleProperty('bInput')
 
+            tasks.register("a", TransformerTask) {
+                inputFile = file(aInputPath)
+                outputFile = file(aOutputPath)
+                format = aFormatVal
+            }
+            tasks.register("b", TransformerTask) {
+                dependsOn("a")
+                if (bInputOverride.isPresent()) {
+                    inputFile = file(bInputOverride.get())
+                } else {
+                    inputFile = a.outputFile
+                }
+                outputFile = file(bOutputPath)
+            }
+        """
+
+        def extraArgs = []
         TestFile inputFile = file('src.txt')
         TestFile outputFileA = file('src.a.txt')
         TestFile outputFileB = file('src.b.txt')
@@ -141,7 +133,7 @@ apply from: 'changes.gradle'
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         when:
         TestFile.Snapshot aSnapshot = outputFileA.snapshot()
@@ -178,7 +170,7 @@ apply from: 'changes.gradle'
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         outputFileA.assertHasChangedSince(aSnapshot)
         outputFileB.assertHasChangedSince(bSnapshot)
@@ -197,7 +189,7 @@ apply from: 'changes.gradle'
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         outputFileA.assertHasChangedSince(aSnapshot)
         outputFileB.assertHasChangedSince(bSnapshot)
@@ -216,7 +208,7 @@ apply from: 'changes.gradle'
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
         result.assertTasksSkipped(":b")
 
         outputFileA.text == '[new content]'
@@ -228,7 +220,7 @@ apply from: 'changes.gradle'
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":b")
+        result.assertTasksExecuted(":b")
         result.assertTasksSkipped(":a")
 
         outputFileA.text == '[new content]'
@@ -246,7 +238,7 @@ apply from: 'changes.gradle'
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
         result.assertTasksSkipped(":b")
 
         outputFileA.text == '[new content]'
@@ -268,87 +260,79 @@ apply from: 'changes.gradle'
 
         // Change input file location
         when:
-        changesFile << '''
-a.inputFile = file('new-a-input.txt')
-'''
+        extraArgs << "-PaInput=new-a-input.txt"
         file('new-a-input.txt').text = 'new content'
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
-        result.assertTasksNotSkipped(":a")
-        result.assertTasksSkipped(":b")
         outputFileA.text == '[new content]'
+        outputFileB.text == '[[new content]]'
+        result.assertTasksExecuted(":a")
+        result.assertTasksSkipped(":b")
 
         when:
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
         result.assertTasksSkipped(":a", ":b")
 
         // Change final output file destination
         when:
-        changesFile << '''
-b.outputFile = file('new-output.txt')
-'''
-        succeeds "b"
+        extraArgs << "-PbOutput=new-output.txt"
+        succeeds("b", *extraArgs)
         outputFileB = file('new-output.txt')
 
         then:
-        result.assertTasksSkipped(":a")
-        result.assertTasksNotSkipped(":b")
-
         outputFileB.text == '[[new content]]'
+        outputFileA.text == '[new content]'
+        result.assertTasksSkipped(":a")
+        result.assertTasksExecuted(":b")
 
         when:
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
         result.assertTasksSkipped(":a", ":b")
 
         // Change intermediate output file destination
         when:
-        changesFile << '''
-a.outputFile = file('new-a-output.txt')
-b.inputFile = a.outputFile
-'''
-        succeeds "b"
+        extraArgs << "-PaOutput=new-a-output.txt"
+        succeeds("b", *extraArgs)
         outputFileA = file('new-a-output.txt')
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
         outputFileA.text == '[new content]'
 
         when:
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
         result.assertTasksSkipped(":a", ":b")
 
         // Change an input property of the first task (the content format)
         when:
-        changesFile << '''
-a.format = '- %s -'
-'''
-        succeeds "b"
+        extraArgs << "-PaFormat=- %s -"
+        succeeds("b", *extraArgs)
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         outputFileA.text == '- new content -'
         outputFileB.text == '[- new content -]'
 
         when:
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
         result.assertTasksSkipped(":a", ":b")
 
         // Run with --rerun-tasks command-line options
         when:
-        succeeds "b", "--rerun-tasks"
+        succeeds("b", "--rerun-tasks", *extraArgs)
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         // Output files already exist before using this version of Gradle
         // delete .gradle dir to simulate this
@@ -356,21 +340,21 @@ a.format = '- %s -'
         file('.gradle').assertIsDir().deleteDir()
         outputFileA.makeOlder()
         outputFileB.makeOlder()
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         when:
         outputFileB.delete()
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
-        result.assertTasksNotSkipped(":b")
+        result.assertTasksExecuted(":b")
         result.assertTasksSkipped(":a")
 
         when:
-        succeeds "b"
+        succeeds("b", *extraArgs)
 
         then:
         result.assertTasksSkipped(":a", ":b")
@@ -396,7 +380,7 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         when:
         TestFile outputAFile = file('build/a/file1.txt')
@@ -423,7 +407,7 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         outputAFile.assertHasChangedSince(aSnapshot)
         outputBFile.assertHasChangedSince(bSnapshot)
@@ -442,7 +426,7 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         outputAFile.assertHasChangedSince(aSnapshot)
         outputBFile.assertHasChangedSince(bSnapshot)
@@ -461,7 +445,7 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         file('build/a/file2.txt').text == '[content2]'
         file('build/b/file2.txt').text == '[[content2]]'
@@ -478,7 +462,7 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
         result.assertTasksSkipped(":b")
 
         when:
@@ -493,7 +477,7 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
         result.assertTasksSkipped(":b")
         outputAFile.text == '[new content]'
 
@@ -509,7 +493,7 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
         result.assertTasksSkipped(":b")
         outputAFile.text == '[new content]'
 
@@ -528,14 +512,14 @@ task b(type: DirTransformerTask, dependsOn: a) {
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         when:
         file('build/b').deleteDir()
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":b")
+        result.assertTasksExecuted(":b")
         result.assertTasksSkipped(":a")
 
         when:
@@ -571,11 +555,10 @@ task b(type: DirTransformerTask, dependsOn: a) {
             assert inputFile.length() == before
 
             succeeds("b")
-            result.assertTasksNotSkipped(":a", ":b")
+            result.assertTasksExecuted(":a", ":b")
         }
     }
 
-    @ToBeFixedForConfigurationCache(because = "task wrongly up-to-date")
     def "skips tasks when input properties have not changed"() {
         buildFile << '''
 public class GeneratorTask extends DefaultTask {
@@ -616,7 +599,7 @@ task a(type: GeneratorTask) {
         succeeds "a", "-Ptext=text"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
 
         when:
         succeeds "a", "-Ptext=text"
@@ -628,7 +611,7 @@ task a(type: GeneratorTask) {
         succeeds "a", "-Ptext=newtext"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
     }
 
     def "multiple tasks can generate into overlapping output directories"() {
@@ -652,7 +635,7 @@ task b(type: DirTransformerTask) {
         succeeds "a", "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         // No changes
         when:
@@ -667,7 +650,7 @@ task b(type: DirTransformerTask) {
         succeeds "a", "b"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
         result.assertTasksSkipped(":b")
 
         // Change an output file
@@ -676,7 +659,7 @@ task b(type: DirTransformerTask) {
         succeeds "a", "b"
 
         then:
-        result.assertTasksNotSkipped(":b")
+        result.assertTasksExecuted(":b")
         result.assertTasksSkipped(":a")
 
         // Output files already exist before using this version of Gradle
@@ -688,20 +671,20 @@ task b(type: DirTransformerTask) {
         succeeds "a", "b"
 
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         when:
         file('build').deleteDir()
         succeeds "a"
 
         then:
-        result.assertTasksNotSkipped(":a")
+        result.assertTasksExecuted(":a")
 
         when:
         succeeds "b"
 
         then:
-        result.assertTasksNotSkipped(":b")
+        result.assertTasksExecuted(":b")
     }
 
     def "can use up-to-date predicate to force task to execute"() {
@@ -737,7 +720,7 @@ task nothing {
         succeeds "inputsAndOutputs"
 
         then:
-        result.assertTasksNotSkipped(":inputsAndOutputs")
+        result.assertTasksExecuted(":inputsAndOutputs")
 
         // Is up to date
 
@@ -753,21 +736,21 @@ task nothing {
         succeeds "inputsAndOutputs", '-Puptodate'
 
         then:
-        result.assertTasksNotSkipped(":inputsAndOutputs")
+        result.assertTasksExecuted(":inputsAndOutputs")
 
         // Predicate is false
         when:
         succeeds "inputsAndOutputs"
 
         then:
-        result.assertTasksNotSkipped(":inputsAndOutputs")
+        result.assertTasksExecuted(":inputsAndOutputs")
 
         // Task with input files and a predicate
         when:
         succeeds "noOutputs"
 
         then:
-        result.assertTasksNotSkipped(":noOutputs")
+        result.assertTasksExecuted(":noOutputs")
 
         // Is up to date
         when:
@@ -782,21 +765,21 @@ task nothing {
         succeeds "noOutputs", "-Puptodate"
 
         then:
-        result.assertTasksNotSkipped(":noOutputs")
+        result.assertTasksExecuted(":noOutputs")
 
         // Predicate is false
         when:
         succeeds "noOutputs"
 
         then:
-        result.assertTasksNotSkipped(":noOutputs")
+        result.assertTasksExecuted(":noOutputs")
 
         // Task a predicate only
         when:
         succeeds "nothing"
 
         then:
-        result.assertTasksNotSkipped(":nothing")
+        result.assertTasksExecuted(":nothing")
 
         // Is up to date
         when:
@@ -810,7 +793,7 @@ task nothing {
         succeeds "nothing"
 
         then:
-        result.assertTasksNotSkipped(":nothing")
+        result.assertTasksExecuted(":nothing")
     }
 
     def "lifecycle task is up-to-date when all dependencies are skipped"() {
@@ -829,7 +812,7 @@ task b(dependsOn: a)
         when:
         succeeds "b"
         then:
-        result.assertTasksNotSkipped(":a", ":b")
+        result.assertTasksExecuted(":a", ":b")
 
         when:
         succeeds "b"
@@ -860,12 +843,12 @@ task b(dependsOn: a)
         when:
         succeeds "transform"
         then:
-        result.assertTasksNotSkipped(":${testDirectory.name}:generate", ":otherBuild", ':transform')
+        result.assertTasksExecuted(":${testDirectory.name}:generate", ":otherBuild", ':transform')
 
         when:
         succeeds "transform"
         then:
-        result.assertTasksNotSkipped(":otherBuild")
+        result.assertTasksExecuted(":otherBuild")
         result.assertTasksSkipped(":${testDirectory.name}:generate", ":transform")
     }
 
@@ -889,7 +872,7 @@ task b(dependsOn: a)
         succeeds "a"
 
         then:
-        result.assertTasksNotSkipped(':a')
+        result.assertTasksExecuted(':a')
         def outputFile = file('output.txt')
         outputFile.text == 'output-file'
 
@@ -906,7 +889,7 @@ task b(dependsOn: a)
         succeeds "a"
 
         then:
-        result.assertTasksNotSkipped(':a')
+        result.assertTasksExecuted(':a')
         outputFile.text == 'output-file'
 
         when:
@@ -921,7 +904,7 @@ task b(dependsOn: a)
         succeeds "a"
 
         then:
-        result.assertTasksNotSkipped(':a')
+        result.assertTasksExecuted(':a')
         outputFile.text == 'output-file'
 
         when:
@@ -952,7 +935,7 @@ task b(dependsOn: a)
         succeeds "a"
 
         then:
-        result.assertTasksNotSkipped(':a')
+        result.assertTasksExecuted(':a')
         outputContains("file name: input.txt content: 'input-file'")
 
         // No changes
@@ -960,7 +943,7 @@ task b(dependsOn: a)
         succeeds "a"
 
         then:
-        result.assertTasksNotSkipped(':a')
+        result.assertTasksExecuted(':a')
         outputContains("file name: input.txt content: 'input-file'")
     }
 
@@ -1004,28 +987,28 @@ task b(dependsOn: a)
         run "src1", "transform1", "src2", "transform2"
 
         then:
+        result.assertTasksScheduled(":src1", ":transform1", ":src2", ":transform2")
         result.assertTasksExecuted(":src1", ":transform1", ":src2", ":transform2")
-        result.assertTasksNotSkipped(":src1", ":transform1", ":src2", ":transform2")
 
         when:
         run "transform2"
 
         then:
-        result.assertTasksExecuted(":transform2")
+        result.assertTasksScheduled(":transform2")
         result.assertTasksSkipped(":transform2")
 
         when:
         run "transform1"
 
         then:
+        result.assertTasksScheduled(":transform1")
         result.assertTasksExecuted(":transform1")
-        result.assertTasksNotSkipped(":transform1")
 
         when:
         run "transform1", "transform2"
 
         then:
-        result.assertTasksExecuted(":transform1", ":transform2")
+        result.assertTasksScheduled(":transform1", ":transform2")
         result.assertTasksSkipped(":transform1", ":transform2")
     }
 
@@ -1068,7 +1051,7 @@ task b(dependsOn: a)
         succeeds "b", "b2"
 
         then:
-        result.assertTasksNotSkipped(':a', ':b', ':b2')
+        result.assertTasksExecuted(':a', ':b', ':b2')
         output.contains "Task 'b' file 'output.txt' with 'output-file'"
         output.contains "Task 'b2' file 'output.txt' with 'output-file'"
 
@@ -1077,16 +1060,14 @@ task b(dependsOn: a)
 
         then:
         result.assertTasksSkipped(':a')
-        result.assertTasksNotSkipped(':b', ':b2')
+        result.assertTasksExecuted(':b', ':b2')
         output.contains "Task 'b' file 'output.txt' with 'output-file'"
         output.contains "Task 'b2' file 'output.txt' with 'output-file'"
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.UNKNOWN_IMPLEMENTATION
-    )
-    @ToBeFixedForConfigurationCache(because = "ClassNotFoundException: CustomTask")
-    def "task loaded with custom classloader disables execution optimizations"() {
+    @UnsupportedWithConfigurationCache(because = "Custom classloader, https://github.com/gradle/gradle/issues/11510")
+    def "task loaded with custom classloader fails the build"() {
+        enableProblemsApiCheck()
         file("input.txt").text = "data"
         buildFile << """
             def CustomTask = new GroovyClassLoader(getClass().getClassLoader()).parseClass '''
@@ -1109,125 +1090,26 @@ task b(dependsOn: a)
             }
         """
         when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            implementationOfTask(':customTask')
-            unknownClassloader('CustomTask_Decorated')
-            includeLink()
-        })
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('CustomTask_Decorated')
-            includeLink()
-        })
-        succeeds "customTask"
+        fails "customTask"
         then:
-        noneSkipped()
-
-        when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            implementationOfTask(':customTask')
-            unknownClassloader('CustomTask_Decorated')
-            includeLink()
-        })
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('CustomTask_Decorated')
-            includeLink()
-        })
-        succeeds "customTask"
-        then:
-        noneSkipped()
+        failureDescriptionStartsWith("Some problems were found with the configuration of task ':customTask' (type 'CustomTask').")
+        verifyAll(receivedProblem(0)) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Logic:Unknown implementation'
+            definition.id.displayName == 'Unknown implementation'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#implementation_unknown"
+        }
+        verifyAll(receivedProblem(1)) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Logic:Unknown implementation'
+            definition.id.displayName == 'Unknown implementation'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#implementation_unknown"
+        }
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.UNKNOWN_IMPLEMENTATION
-    )
-    def "can switch between task with implementation from unknown classloader and from known classloader"() {
-        file("input.txt").text = "data"
-        buildFile << """
-            ${customTaskImplementation("CustomTaskFromBuildFile")}
-
-            def CustomTaskFromUnknownClassloader = new GroovyClassLoader(getClass().getClassLoader()).parseClass '''
-                import org.gradle.api.*
-                import org.gradle.api.tasks.*
-
-                ${customTaskImplementation("CustomTaskFromUnknownClassloader")}
-            '''
-
-            def customTaskClass = providers.gradleProperty("unknownClassloader").forUseAtConfigurationTime().isPresent()
-                    ? CustomTaskFromUnknownClassloader
-                    : CustomTaskFromBuildFile
-
-            task customTask(type: customTaskClass) {
-                outputs.cacheIf { true }
-                input = file("input.txt")
-                output = file("build/output.txt")
-            }
-        """
-        when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            implementationOfTask(':customTask')
-            unknownClassloader('CustomTaskFromUnknownClassloader_Decorated')
-            includeLink()
-        })
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('CustomTaskFromUnknownClassloader_Decorated')
-            includeLink()
-        })
-        withBuildCache().run "customTask", "-PunknownClassloader"
-        then:
-        executedAndNotSkipped(":customTask")
-
-        when:
-        withBuildCache().run "customTask"
-        then:
-        executedAndNotSkipped(":customTask")
-
-        when:
-        withBuildCache().run "customTask"
-        then:
-        skipped(":customTask")
-
-        when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            implementationOfTask(':customTask')
-            unknownClassloader('CustomTaskFromUnknownClassloader_Decorated')
-            includeLink()
-        })
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('CustomTaskFromUnknownClassloader_Decorated')
-            includeLink()
-        })
-        withBuildCache().run "customTask", "-PunknownClassloader"
-        then:
-        executedAndNotSkipped(":customTask")
-
-        when:
-        withBuildCache().run "customTask"
-        then:
-        skipped(":customTask")
-    }
-
-    private static String customTaskImplementation(String className) {
-        """
-            class ${className} extends DefaultTask {
-                @InputFile File input
-                @OutputFile File output
-                @TaskAction action() {
-                    output.parentFile.mkdirs()
-                    output.text = input.text
-                }
-            }
-        """
-    }
-
-    @ValidationTestFor(
-        ValidationProblemId.UNKNOWN_IMPLEMENTATION
-    )
-    @ToBeFixedForConfigurationCache(because = "ClassNotFoundException: CustomTaskAction")
-    def "task with custom action loaded with custom classloader is never up-to-date"() {
+    @UnsupportedWithConfigurationCache(because = "Custom classloader, https://github.com/gradle/gradle/issues/11510")
+    def "task with custom action loaded with custom classloader fails the build"() {
+        enableProblemsApiCheck()
         file("input.txt").text = "data"
         buildFile << """
             import org.gradle.api.*
@@ -1263,24 +1145,15 @@ task b(dependsOn: a)
             }
         """
         when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('CustomTaskAction')
-            includeLink()
-        })
-        succeeds "customTask"
+        fails "customTask"
         then:
-        noneSkipped()
-
-        when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('CustomTaskAction')
-            includeLink()
-        })
-        succeeds "customTask"
-        then:
-        noneSkipped()
+        failureDescriptionStartsWith("A problem was found with the configuration of task ':customTask' (type 'CustomTask').")
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Logic:Unknown implementation'
+            definition.id.displayName == 'Unknown implementation'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#implementation_unknown"
+        }
     }
 
     @Issue("gradle/gradle#1168")
@@ -1304,42 +1177,43 @@ task b(dependsOn: a)
         when:
         succeeds("customTask")
         then:
-        result.assertTasksExecuted(":customTask")
+        result.assertTasksScheduled(":customTask")
         file("build/output/file.txt").assertExists()
 
         when:
         file(".gradle").deleteDir()
         succeeds("customTask")
         then:
-        result.assertTasksExecuted(":customTask")
+        result.assertTasksScheduled(":customTask")
         file("build/output/file.txt").assertExists()
 
         when:
         succeeds("clean")
         then:
-        result.assertTasksExecuted(":clean")
+        result.assertTasksScheduled(":clean")
         file("build/output/file.txt").assertDoesNotExist()
 
         when:
         succeeds("customTask")
         then:
-        result.assertTasksExecuted(":customTask")
+        result.assertTasksScheduled(":customTask")
         file("build/output/file.txt").assertExists()
     }
 
     @Issue("https://github.com/gradle/gradle/issues/2180")
     def "fileTrees can be used as output files"() {
         given:
-        buildScript """
+        buildFile """
             task myTask {
                 inputs.file file('input.txt')
                 outputs.files fileTree(dir: 'build', include: 'output.txt')
+                def layout = project.layout
                 doLast {
-                    file('build').mkdirs()
-                    file('build/output.txt').text = new File('input.txt').text
+                    layout.projectDirectory.file('build').asFile.mkdirs()
+                    layout.projectDirectory.file('build/output.txt').asFile.text = new File('input.txt').text
                 }
             }
-        """.stripIndent()
+        """
 
         file('input.txt').text = 'input file'
 
@@ -1375,42 +1249,7 @@ task b(dependsOn: a)
         skipped(':taskWithInputs')
     }
 
-    @Issue('https://github.com/gradle/gradle/issues/1224')
-    def 'can change input properties dynamically'() {
-        given:
-        file('inputDir1').createDir()
-        file('inputDir2').createDir()
-        buildFile << '''
-    class MyTask extends DefaultTask {
-        @TaskAction
-        void processFiles(IncrementalTaskInputs inputs) {
-            inputs.outOfDate { }
-        }
-    }
-
-    task myTask (type: MyTask){
-        project.ext.inputDirs.split(',').each { inputs.dir(it) }
-        outputs.upToDateWhen { true }
-    }
-'''
-
-        when:
-        args('-PinputDirs=inputDir1,inputDir2')
-
-        then:
-        succeeds('myTask')
-
-        when:
-        args('-PinputDirs=inputDir1')
-
-        then:
-        succeeds('myTask')
-    }
-
     @ToBeImplemented("Private getters should be ignored")
-    @ValidationTestFor(
-        ValidationProblemId.PRIVATE_GETTER_MUST_NOT_BE_ANNOTATED
-    )
     def "private inputs can be overridden in subclass"() {
         given:
         buildFile << '''
@@ -1442,14 +1281,18 @@ task b(dependsOn: a)
 
             task myTask(type: MyTask)
         '''
+        enableProblemsApiCheck()
 
         when:
         fails 'myTask'
 
         then:
-        failureDescriptionContains(
-            privateGetterAnnotatedMessage { type('MyTask').property('myPrivateInput').annotation('Input')}
-        )
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Plugin Validation:Private property with wrong annotation'
+            definition.id.displayName == 'Private property with wrong annotation'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#private_getter_must_not_be_annotated"
+        }
     }
 
     @ToBeImplemented("Private getters should be ignored")
@@ -1505,9 +1348,6 @@ task b(dependsOn: a)
         outputFile.text == 'second'
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.IGNORED_PROPERTY_MUST_NOT_BE_ANNOTATED
-    )
     @Issue("https://github.com/gradle/gradle/issues/11805")
     def "Groovy property annotated as @Internal with differently annotated getter is not allowed"() {
         def inputFile = file("input.txt")
@@ -1538,17 +1378,54 @@ task b(dependsOn: a)
                 outputFile = file("build/output.txt")
             }
         """
+        enableProblemsApiCheck()
 
         when:
         fails "custom"
 
         then:
-        failureDescriptionContains(
-            ignoredAnnotatedPropertyMessage {
-                type('CustomTask').property('classpath')
-                ignoring('Internal')
-                alsoAnnotatedWith('Classpath', 'InputFiles')
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Plugin Validation:Ignored property has other annotations'
+            definition.id.displayName == 'Ignored property has other annotations'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#ignored_property_must_not_be_annotated"
+        }
+    }
+
+    @Issue("https://github.com/gradle/gradle/issues/7923")
+    def "task is not up-to-date when the implementation of a named #actionMethodName action changes"() {
+        buildFile """
+            tasks.register('myTask') {
+                outputs.dir(layout.buildDirectory.dir('myDir'))
+                ${actionMethodName}('myAction') { println("printing from action") }
             }
-        )
+        """
+
+        when:
+        run ':myTask'
+        then:
+        executedAndNotSkipped(':myTask')
+        outputContains("printing from action")
+
+        when:
+        buildFile << """
+            tasks.register('other')
+        """
+        run ':myTask', '--info'
+        then:
+        executedAndNotSkipped(':myTask')
+        outputContains("printing from action")
+        outputContains("One or more additional actions for task ':myTask' have changed.")
+
+        when:
+        run ':myTask'
+        then:
+        skipped(':myTask')
+
+        where:
+        actionMethodName << [
+            "doFirst",
+            "doLast",
+        ]
     }
 }

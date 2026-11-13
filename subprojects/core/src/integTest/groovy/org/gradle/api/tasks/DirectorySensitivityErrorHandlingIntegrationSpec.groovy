@@ -16,23 +16,17 @@
 
 package org.gradle.api.tasks
 
+import org.gradle.api.problems.Severity
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.internal.reflect.problems.ValidationProblemId
 import org.gradle.internal.reflect.validation.ValidationMessageChecker
-import org.gradle.internal.reflect.validation.ValidationTestFor
-import spock.lang.Unroll
-
 
 class DirectorySensitivityErrorHandlingIntegrationSpec extends AbstractIntegrationSpec implements ValidationMessageChecker {
 
     def setup() {
         expectReindentedValidationMessage()
+        enableProblemsApiCheck()
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.INCOMPATIBLE_ANNOTATIONS
-    )
-    @Unroll
     def "fails when @IgnoreEmptyDirectories is applied to an #nonDirectoryInput.annotation annotation"() {
         createAnnotatedInputFileTask(nonDirectoryInput)
         buildFile << """
@@ -48,23 +42,17 @@ class DirectorySensitivityErrorHandlingIntegrationSpec extends AbstractIntegrati
         fails("taskWithInputs")
 
         then:
-        failureDescriptionContains(
-            incompatibleAnnotations {
-                type('TaskWithInputs').property('input')
-                annotatedWith('IgnoreEmptyDirectories')
-                incompatibleWith(nonDirectoryInput.annotation - '@')
-                includeLink()
-            }
-        )
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Plugin Validation:Incompatible annotations'
+            definition.id.displayName == 'Incompatible annotations'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#incompatible_annotations"
+        }
 
         where:
         nonDirectoryInput << NonDirectoryInput.values()
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.INCOMPATIBLE_ANNOTATIONS
-    )
-    @Unroll
     def "fails when @IgnoreEmptyDirectories is applied to an #output.annotation annotation"() {
         createAnnotatedOutputFileTask(output)
         buildFile << """
@@ -80,14 +68,12 @@ class DirectorySensitivityErrorHandlingIntegrationSpec extends AbstractIntegrati
         fails("taskWithOutputs")
 
         then:
-        failureDescriptionContains(
-            incompatibleAnnotations {
-                type('TaskWithOutputs').property('output')
-                annotatedWith('IgnoreEmptyDirectories')
-                incompatibleWith(output.annotation - '@')
-                includeLink()
-            }
-        )
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Plugin Validation:Incompatible annotations'
+            definition.id.displayName == 'Incompatible annotations'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#incompatible_annotations"
+        }
 
         where:
         output << Output.values()

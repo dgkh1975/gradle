@@ -16,10 +16,8 @@
 
 package org.gradle.api
 
-import groovy.test.NotYetImplemented
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import spock.lang.Issue
-import spock.lang.Unroll
 
 class ObjectExtensionInstantiationIntegrationTest extends AbstractIntegrationSpec {
     // Document current behaviour
@@ -149,7 +147,6 @@ class ObjectExtensionInstantiationIntegrationTest extends AbstractIntegrationSpe
         failure.assertHasCause("Too many parameters provided for constructor for type Thing. Expected 2, received 3.")
     }
 
-    @Unroll
     def "can create instance of interface with mutable property of type #type"() {
         buildFile << """
             interface Thing {
@@ -185,7 +182,7 @@ class ObjectExtensionInstantiationIntegrationTest extends AbstractIntegrationSpe
             }
 
             extensions.create("thing", Thing)
-            assert thing.value.toString() == "file collection"
+            assert thing.value.toString() == "extension 'thing' property 'value'"
             assert thing.value.files.empty
             thing.value.from("a.txt")
             assert thing.value.files as List == [file("a.txt")]
@@ -367,7 +364,7 @@ class ObjectExtensionInstantiationIntegrationTest extends AbstractIntegrationSpe
             }
 
             extensions.create("thing", Thing)
-            assert thing.value.toString() == "[]"
+            assert thing.value.toString() == "Bean collection"
             assert thing.value.empty
             thing.value.add(new Bean(name: "a"))
             thing.value.add(new Bean(name: "b"))
@@ -551,8 +548,7 @@ class ObjectExtensionInstantiationIntegrationTest extends AbstractIntegrationSpe
     }
 
     @Issue("https://github.com/gradle/gradle/issues/16936")
-    @NotYetImplemented
-    def "extension can be created on task"() {
+    def "extension with managed properties can be created on task"() {
         buildFile """
             interface MyExtension {
                 Property<String> getProp()
@@ -561,8 +557,9 @@ class ObjectExtensionInstantiationIntegrationTest extends AbstractIntegrationSpe
             tasks.register("mytask") {
                 extensions.create("myext", MyExtension)
                 myext.prop = "foobar"
+                def myextProp = myext.prop
                 doLast {
-                    println("myext.prop = " + myext.prop.get())
+                    println("myext.prop = " + myextProp.get())
                 }
             }
         """

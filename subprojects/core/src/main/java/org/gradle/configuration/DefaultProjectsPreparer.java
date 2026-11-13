@@ -16,39 +16,42 @@
 package org.gradle.configuration;
 
 import org.gradle.api.internal.GradleInternal;
+import org.gradle.api.internal.project.ProjectState;
 import org.gradle.execution.ProjectConfigurer;
-import org.gradle.initialization.ModelConfigurationListener;
 import org.gradle.initialization.ProjectsEvaluatedNotifier;
 import org.gradle.internal.buildtree.BuildModelParameters;
-import org.gradle.internal.operations.BuildOperationExecutor;
+import org.gradle.internal.operations.BuildOperationRunner;
+
+import static org.gradle.configuration.DeferredProjectEvaluationCondition.skipEvaluationDuringProjectPreparation;
 
 public class DefaultProjectsPreparer implements ProjectsPreparer {
-    private final BuildOperationExecutor buildOperationExecutor;
+    private final BuildOperationRunner buildOperationRunner;
     private final ProjectConfigurer projectConfigurer;
     private final BuildModelParameters buildModelParameters;
-    private final ModelConfigurationListener modelConfigurationListener;
 
     public DefaultProjectsPreparer(
         ProjectConfigurer projectConfigurer,
         BuildModelParameters buildModelParameters,
-        ModelConfigurationListener modelConfigurationListener,
-        BuildOperationExecutor buildOperationExecutor
+        BuildOperationRunner buildOperationRunner
     ) {
         this.projectConfigurer = projectConfigurer;
         this.buildModelParameters = buildModelParameters;
-        this.modelConfigurationListener = modelConfigurationListener;
-        this.buildOperationExecutor = buildOperationExecutor;
+        this.buildOperationRunner = buildOperationRunner;
     }
 
     @Override
     public void prepareProjects(GradleInternal gradle) {
-        if (buildModelParameters.isConfigureOnDemand() && gradle.isRootBuild()) {
-            projectConfigurer.configure(gradle.getRootProject());
-        } else {
-            projectConfigurer.configureHierarchy(gradle.getRootProject());
-            new ProjectsEvaluatedNotifier(buildOperationExecutor).notify(gradle);
+        if (skipEvaluationDuringProjectPreparation(buildModelParameters, gradle)) {
+            return;
         }
 
-        modelConfigurationListener.onConfigure(gradle);
+        ProjectState rootProject = gradle.getOwner().getRootProject();
+        if (buildModelParameters.isParallelProjectConfiguration()) {
+            projectConfigurer.configureHierarchyInParallel(rootProject);
+        } else {
+            projectConfigurer.configureHierarchy(rootProject);
+        }
+        new ProjectsEvaluatedNotifier(buildOperationRunner).notify(gradle);
     }
+
 }

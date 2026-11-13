@@ -17,75 +17,140 @@
 package org.gradle.execution.plan;
 
 import org.gradle.api.Action;
-import org.gradle.api.Task;
-import org.gradle.api.artifacts.component.BuildIdentifier;
 import org.gradle.api.internal.TaskInternal;
 import org.gradle.api.internal.project.ProjectInternal;
+import org.gradle.api.internal.tasks.NodeExecutionContext;
 import org.gradle.composite.internal.BuildTreeWorkGraphController;
-import org.gradle.composite.internal.IncludedBuildTaskResource;
-import org.gradle.internal.Actions;
+import org.gradle.internal.build.BuildState;
 import org.gradle.internal.resources.ResourceLock;
 import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.util.Collections;
 import java.util.List;
+import java.util.Set;
 
-public class TaskInAnotherBuild extends TaskNode {
-    public static TaskInAnotherBuild of(
-        TaskInternal task,
-        BuildTreeWorkGraphController taskGraph
-    ) {
-        BuildIdentifier targetBuild = buildIdentifierOf(task);
-        IncludedBuildTaskResource taskResource = taskGraph.locateTask(targetBuild, task);
-        return new TaskInAnotherBuild(task.getIdentityPath(), task.getPath(), targetBuild, taskResource);
-    }
+public abstract class TaskInAnotherBuild extends TaskNode {
 
     public static TaskInAnotherBuild of(
-        String taskPath,
-        BuildIdentifier targetBuild,
-        BuildTreeWorkGraphController taskGraph
+        TaskNode targetNode,
+        BuildState targetBuild,
+        BuildTreeWorkGraphController workGraph
     ) {
-        IncludedBuildTaskResource taskResource = taskGraph.locateTask(targetBuild, taskPath);
-        Path taskIdentityPath = Path.path(targetBuild.getName()).append(Path.path(taskPath));
-        return new TaskInAnotherBuild(taskIdentityPath, taskPath, targetBuild, taskResource);
+        return new TaskInAnotherBuild(targetNode.getTask().getIdentityPath()) {
+
+            @Override
+            public TaskNode getTargetNode() {
+                return targetNode;
+            }
+
+            @Override
+            protected void queueTargetForExecution() {
+                workGraph.queueForExecution(targetBuild, targetNode);
+            }
+
+        };
     }
 
-    protected IncludedBuildTaskResource.State state = IncludedBuildTaskResource.State.Waiting;
+    /**
+     * Creates a reference to a task in another build, restored from the configuration cache.
+     *
+     * The reference must be {@link Restored#bindTarget bound} to its restored target node once all
+     * builds in the tree have been loaded.
+     *
+     * @param taskIdentityPath the path to the task relative to its build tree
+     */
+    public static Restored restored(Path taskIdentityPath) {
+        return new Restored(taskIdentityPath);
+    }
+
+    /**
+     * A reference restored from the configuration cache.
+     */
+    public static class Restored extends TaskInAnotherBuild {
+
+        private @Nullable TaskNode targetNode;
+
+        private Restored(Path taskIdentityPath) {
+            super(taskIdentityPath);
+        }
+
+        /**
+         * Binds this reference to its restored target node.
+         */
+        public void bindTarget(TaskNode targetNode) {
+            this.targetNode = targetNode;
+        }
+
+        @Override
+        public TaskNode getTargetNode() {
+            if (targetNode == null) {
+                throw new IllegalStateException("No target node has been bound for " + this);
+            }
+            return targetNode;
+        }
+
+        @Override
+        protected void queueTargetForExecution() {
+            // Nothing to queue. The target node is always part of its build's restored work graph
+        }
+
+    }
+
+    private @Nullable DependenciesState targetOutcome;
     private final Path taskIdentityPath;
-    private final String taskPath;
-    private final BuildIdentifier targetBuild;
-    private final IncludedBuildTaskResource target;
 
-    protected TaskInAnotherBuild(Path taskIdentityPath, String taskPath, BuildIdentifier targetBuild, IncludedBuildTaskResource target) {
+    protected TaskInAnotherBuild(Path taskIdentityPath) {
         this.taskIdentityPath = taskIdentityPath;
-        this.taskPath = taskPath;
-        this.targetBuild = targetBuild;
-        this.target = target;
-        doNotRequire();
     }
 
-    public BuildIdentifier getTargetBuild() {
-        return targetBuild;
+    public Path getTaskIdentityPath() {
+        return taskIdentityPath;
     }
 
-    public String getTaskPath() {
-        return taskPath;
-    }
+    /**
+     * The node for the target task, in the other build's work graph.
+     */
+    public abstract TaskNode getTargetNode();
 
     @Override
     public TaskInternal getTask() {
-        return target.getTask();
+        return getTargetNode().getTask();
     }
 
     @Override
-    public void prepareForExecution() {
-        target.queueForExecution();
+    protected @Nullable ExecutionState getInitialState() {
+        TaskNode targetNode = getTargetNode();
+        if (targetNode.isExecuted()) {
+            if (targetNode.isSuccessful()) {
+                return ExecutionState.EXECUTED;
+            } else {
+                return ExecutionState.FAILED_DEPENDENCY;
+            }
+        }
+        return null;
+    }
+
+    @Override
+    public Set<Node> getLifecycleSuccessors() {
+        return Collections.emptySet();
+    }
+
+    @Override
+    public void setLifecycleSuccessors(Set<Node> successors) {
+        if (!successors.isEmpty()) {
+            throw new IllegalArgumentException();
+        }
+    }
+
+    @Override
+    public void prepareForExecution(Action<Node> monitor) {
+        getTargetNode().onComplete(() -> monitor.execute(this));
     }
 
     @Nullable
     @Override
-    public ResourceLock getProjectToLock() {
+    public ResourceLock getResourceToLock() {
         // Ignore, as the node in the other build's execution graph takes care of this
         return null;
     }
@@ -105,75 +170,53 @@ public class TaskInAnotherBuild extends TaskNode {
 
     @Override
     public Throwable getNodeFailure() {
-        throw new UnsupportedOperationException();
+        return null;
     }
 
     @Override
-    public void rethrowNodeFailure() {
-        throw new UnsupportedOperationException();
+    public void resolveDependencies(TaskDependencyResolver dependencyResolver) {
+        queueTargetForExecution();
     }
 
-    @Override
-    public void appendPostAction(Action<? super Task> action) {
-        // Ignore. Currently, the actions don't need to run, it's just better if they do
-        // By the time this node is notified that the task in the other build has completed, it's too late to run the action
-        // Instead, the action should be attached to the task in the other build rather than here
-    }
+    /**
+     * Queues the target task for execution in its build's work graph.
+     */
+    protected abstract void queueTargetForExecution();
 
     @Override
-    public Action<? super Task> getPostAction() {
-        return Actions.doNothing();
-    }
-
-    @Override
-    public void resolveDependencies(TaskDependencyResolver dependencyResolver, Action<Node> processHardSuccessor) {
-    }
-
-    @Override
-    public boolean requiresMonitoring() {
-        return true;
-    }
-
-    @Override
-    public boolean isSuccessful() {
-        return state == IncludedBuildTaskResource.State.Success;
-    }
-
-    @Override
-    public boolean isFailed() {
-        return state == IncludedBuildTaskResource.State.Failed;
-    }
-
-    @Override
-    public boolean isComplete() {
-        if (super.isComplete() || state.isComplete()) {
-            return true;
+    public DependenciesState doCheckDependenciesComplete() {
+        DependenciesState dependenciesState = super.doCheckDependenciesComplete();
+        if (dependenciesState != DependenciesState.COMPLETE_AND_SUCCESSFUL) {
+            return dependenciesState;
         }
 
-        state = target.getTaskState();
-        return state.isComplete();
-    }
-
-    @Override
-    public int compareTo(Node other) {
-        if (getClass() != other.getClass()) {
-            return getClass().getName().compareTo(other.getClass().getName());
+        // This node is ready to "execute" when the task in the other build has completed
+        if (targetOutcome == null) {
+            TaskNode targetNode = getTargetNode();
+            if (!targetNode.isComplete()) {
+                return DependenciesState.NOT_COMPLETE;
+            }
+            targetOutcome = targetNode.isExecuted() && targetNode.isSuccessful()
+                ? DependenciesState.COMPLETE_AND_SUCCESSFUL
+                : DependenciesState.COMPLETE_AND_NOT_SUCCESSFUL;
         }
-        TaskInAnotherBuild taskNode = (TaskInAnotherBuild) other;
-        return taskIdentityPath.compareTo(taskNode.taskIdentityPath);
+        return targetOutcome;
     }
 
     @Override
-    public String toString() {
-        return taskIdentityPath.toString();
+    public String getDisplayName() {
+        return "other build task " + taskIdentityPath;
     }
 
     @Override
-    public void resolveMutations() {
-        // Assume for now that no task in the consuming build will destroy the outputs of this task or overlaps with this task
+    protected void nodeSpecificHealthDiagnostics(StringBuilder builder) {
+        super.nodeSpecificHealthDiagnostics(builder);
+        builder.append(", target=[").append(getTargetNode().healthDiagnostics()).append("]");
     }
 
-    private static BuildIdentifier buildIdentifierOf(TaskInternal task) {
-        return ((ProjectInternal) task.getProject()).getOwner().getOwner().getBuildIdentifier();
+    @Override
+    public void execute(NodeExecutionContext context) {
+        // This node does not do anything itself
     }
+
 }

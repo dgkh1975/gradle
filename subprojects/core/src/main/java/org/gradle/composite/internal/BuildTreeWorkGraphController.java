@@ -16,32 +16,31 @@
 
 package org.gradle.composite.internal;
 
-import org.gradle.api.artifacts.component.BuildIdentifier;
-import org.gradle.api.internal.TaskInternal;
+import org.gradle.execution.plan.Node;
+import org.gradle.internal.build.BuildState;
 import org.gradle.internal.buildtree.BuildTreeWorkGraph;
-import org.gradle.internal.service.scopes.Scopes;
+import org.gradle.internal.service.scopes.Scope;
 import org.gradle.internal.service.scopes.ServiceScope;
+import org.jspecify.annotations.Nullable;
 
+import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
  * A service that allows work graphs to be created, populated and executed.
  */
-@ServiceScope(Scopes.BuildTree.class)
+@ServiceScope(Scope.BuildTree.class)
 public interface BuildTreeWorkGraphController {
-    /**
-     * Locates a task node in another build's work graph. Does not schedule the task for execution, use {@link IncludedBuildTaskResource#queueForExecution()} to queue the task for execution.
-     */
-    IncludedBuildTaskResource locateTask(BuildIdentifier targetBuild, TaskInternal task);
 
     /**
-     * Locates a task node in another build's work graph. Does not schedule the task for execution, use {@link IncludedBuildTaskResource#queueForExecution()} to queue the task for execution.
+     * Queues the given node of the given build for execution, but does not schedule it. Use {@link BuildTreeWorkGraph#scheduleWork(Consumer)} to schedule queued tasks.
      */
-    IncludedBuildTaskResource locateTask(BuildIdentifier targetBuild, String taskPath);
+    void queueForExecution(BuildState targetBuild, Node node);
 
     /**
      * Runs the given action against a new, empty work graph. This allows tasks to be run while calculating the task graph of the build tree, for example to run `buildSrc` tasks or
      * to build local plugins in an included build.
      */
-    <T> T withNewWorkGraph(Function<? super BuildTreeWorkGraph, T> action);
+    <T extends @Nullable Object> T withNewWorkGraph(Function<? super BuildTreeWorkGraph, T> action);
+
 }

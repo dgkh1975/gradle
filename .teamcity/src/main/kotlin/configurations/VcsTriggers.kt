@@ -16,22 +16,16 @@
 
 package configurations
 
-import common.VersionedSettingsBranch
-
-val triggerExcludes = """
-        -:.idea
-        -:.github
-        -:.teamcity
-        -:.teamcityTest
-        -:subprojects/docs/src/docs/release
+val triggerExcludes =
+    """
+    -:.idea
+    -:.github
+    -:.teamcity
+    -:platforms/documentation/docs/src/docs/release
     """.trimIndent()
 
-fun VersionedSettingsBranch.branchFilter() = """
-    +:$branchName
-""".trimIndent()
-
-fun branchesFilterExcluding(vararg excludedBranch: String) = """
+fun branchesFilterExcluding(vararg excludedBranch: String) =
+    """
 +:*
--:<default>
 ${excludedBranch.joinToString("\n") { "-:$it" }}
 """

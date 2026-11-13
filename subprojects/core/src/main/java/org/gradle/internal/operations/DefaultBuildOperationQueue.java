@@ -16,62 +16,149 @@
 
 package org.gradle.internal.operations;
 
+import com.google.common.collect.ImmutableList;
 import org.gradle.internal.UncheckedException;
+import org.gradle.internal.work.SubmissionQueue;
 import org.gradle.internal.work.WorkerLeaseService;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
-import java.util.Deque;
-import java.util.LinkedList;
+import javax.annotation.concurrent.GuardedBy;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
 import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Consumer;
 
 class DefaultBuildOperationQueue<T extends BuildOperation> implements BuildOperationQueue<T> {
-    private enum QueueState {
-        Working, Finishing, Cancelled, Done
+    private enum QueueStatus {
+        WORKING, CANCELED, WAITING_TO_COMPLETE
     }
 
     private final boolean allowAccessToProjectState;
     private final WorkerLeaseService workerLeases;
-    private final Executor executor;
+    private final SubmissionQueue constrainedQueue;
+    private final Executor unconstrainedExecutor;
     private final QueueWorker<T> queueWorker;
-    private String logLocation;
+    private final @Nullable BuildOperationRef parent;
 
-    // Lock protects the following state, using an intentionally simple locking strategy
-    private final ReentrantLock lock = new ReentrantLock();
-    private final Condition workAvailable = lock.newCondition();
-    private final Condition operationsComplete = lock.newCondition();
-    private QueueState queueState = QueueState.Working;
-    private int workerCount;
-    private int pendingOperations;
-    private final Deque<T> workQueue = new LinkedList<>();
-    private final LinkedList<Throwable> failures = new LinkedList<>();
+    private volatile String logLocation;
 
-    DefaultBuildOperationQueue(boolean allowAccessToProjectState, WorkerLeaseService workerLeases, Executor executor, QueueWorker<T> queueWorker) {
+    private final Lock lock = new ReentrantLock();
+    /**
+     * Signaled when the waiting thread may have something to do: constrained work was added, or the last outstanding operation finished.
+     */
+    @GuardedBy("lock")
+    private final Condition waiterWorkStateChanged = lock.newCondition();
+    @GuardedBy("lock")
+    private QueueStatus status = QueueStatus.WORKING;
+    /**
+     * Operations that have been submitted and have not yet finished.
+     */
+    @GuardedBy("lock")
+    private int outstandingOperations;
+    private final List<Throwable> failures = new CopyOnWriteArrayList<>();
+
+    DefaultBuildOperationQueue(
+        boolean allowAccessToProjectState,
+        WorkerLeaseService workerLeases,
+        SubmissionQueue constrainedQueue,
+        Executor unconstrainedExecutor,
+        QueueWorker<T> queueWorker,
+        @Nullable BuildOperationRef parent
+    ) {
         this.allowAccessToProjectState = allowAccessToProjectState;
         this.workerLeases = workerLeases;
-        this.executor = executor;
+        this.constrainedQueue = constrainedQueue;
+        this.unconstrainedExecutor = unconstrainedExecutor;
         this.queueWorker = queueWorker;
+        this.parent = parent;
     }
 
     @Override
-    public void add(final T operation) {
+    public void add(T operation) {
+        submit(operation, constrainedQueue::add);
+    }
+
+    @Override
+    public void addUnconstrained(T operation) {
+        submit(operation, unconstrainedExecutor::execute);
+    }
+
+    private void submit(T operation, Consumer<Runnable> enqueue) {
+        registerOperation();
+        try {
+            enqueue.accept(new OperationRunnable(operation));
+        } catch (Throwable t) {
+            // In the rare case that the operation is not accepted, unregister it so that waitForCompletion() does not wait forever.
+            lock.lock();
+            try {
+                outstandingOperations--;
+            } finally {
+                lock.unlock();
+            }
+            throw t;
+        }
         lock.lock();
         try {
-            if (queueState == QueueState.Done) {
-                throw new IllegalStateException("BuildOperationQueue cannot be reused once it has completed.");
+            waiterWorkStateChanged.signalAll();
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void registerOperation() {
+        lock.lock();
+        try {
+            switch (status) {
+                case WORKING:
+                    break;
+                case CANCELED:
+                    throw new IllegalStateException("BuildOperationQueue cannot be reused once it has cancelled.");
+                case WAITING_TO_COMPLETE:
+                    // Only allow additions while a waiting thread is still there to see them.
+                    if (outstandingOperations == 0) {
+                        throw new IllegalStateException("BuildOperationQueue cannot be reused once it has completed.");
+                    }
+                    break;
+                default:
+                    throw new AssertionError("Unknown queue status: " + status);
             }
-            if (queueState == QueueState.Cancelled) {
-                return;
+            outstandingOperations++;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void operationFinished() {
+        lock.lock();
+        try {
+            if (outstandingOperations <= 0) {
+                throw new IllegalStateException("Some operation was unregistered more than once, or never registered.");
             }
-            workQueue.add(operation);
-            pendingOperations++;
-            workAvailable.signalAll();
-            if (workerCount == 0 || workerCount < workerLeases.getMaxWorkerCount() - 1) {
-                // `getMaxWorkerCount() - 1` because main thread executes work as well. See https://github.com/gradle/gradle/issues/3273
-                // TODO This could be more efficient, so that we only start a worker when there are none idle _and_ there is a worker lease available
-                executor.execute(new WorkerRunnable());
+            outstandingOperations--;
+            if (outstandingOperations == 0) {
+                waiterWorkStateChanged.signalAll();
             }
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private boolean isComplete() {
+        lock.lock();
+        try {
+            return outstandingOperations == 0;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private boolean isCancelled() {
+        lock.lock();
+        try {
+            return status == QueueStatus.CANCELED;
         } finally {
             lock.unlock();
         }
@@ -81,13 +168,17 @@ class DefaultBuildOperationQueue<T extends BuildOperation> implements BuildOpera
     public void cancel() {
         lock.lock();
         try {
-            if (queueState == QueueState.Cancelled || queueState == QueueState.Done) {
-                return;
+            switch (status) {
+                case WORKING:
+                    status = QueueStatus.CANCELED;
+                    break;
+                case CANCELED:
+                    break;
+                case WAITING_TO_COMPLETE:
+                    throw new IllegalStateException("Cannot cancel a BuildOperationQueue that has already completed.");
+                default:
+                    throw new AssertionError("Unknown queue status: " + status);
             }
-            queueState = QueueState.Cancelled;
-            completeOperations(workQueue.size());
-            workQueue.clear();
-            workAvailable.signalAll();
         } finally {
             lock.unlock();
         }
@@ -95,71 +186,71 @@ class DefaultBuildOperationQueue<T extends BuildOperation> implements BuildOpera
 
     @Override
     public void waitForCompletion() throws MultipleBuildOperationFailures {
-        signalNoMoreWork();
+        if (!workerLeases.isWorkerThread()) {
+            throw new IllegalStateException("waitForCompletion() must be called from a thread that holds a worker lease.");
+        }
 
-        // Use this thread to process any work - this allows work to be executed using the
-        // worker lease acquired by this thread even if the executor thread pool is full of
-        // workers from other queues.  In other words, it ensures that all worker leases
-        // are being utilized, regardless of the bounds of the thread pool.
-        new WorkerRunnable().run();
-
-        waitForWorkToComplete();
-    }
-
-    private void signalNoMoreWork() {
         lock.lock();
         try {
-            if (queueState == QueueState.Done) {
+            if (status == QueueStatus.WAITING_TO_COMPLETE) {
                 throw new IllegalStateException("Cannot wait for completion more than once.");
             }
-            queueState = QueueState.Finishing;
-            workAvailable.signalAll();
+            if (status == QueueStatus.WORKING) {
+                status = QueueStatus.WAITING_TO_COMPLETE;
+            }
         } finally {
             lock.unlock();
         }
+
+        while (true) {
+            // Only the constrained queue is drained: it can stall when every lease is held elsewhere,
+            // and this thread has one to lend. See https://github.com/gradle/gradle/issues/37613
+            // Unconstrained work cannot stall that way, and running it here would put it back under a lease.
+            if (!constrainedQueue.isEmpty()) {
+                constrainedQueue.processWorkUsingCurrentThreadUntilEmpty();
+            }
+            if (isComplete()) {
+                break;
+            }
+
+            // Release the worker lease while blocked, but only drop the project lock if the work
+            // might need it (allowAccessToProjectState); otherwise hold it to avoid deadlocks when a
+            // resource lock is held above. See https://github.com/gradle/gradle/issues/38154
+            if (allowAccessToProjectState) {
+                awaitCompletionOrPendingWork();
+            } else {
+                workerLeases.whileDisallowingProjectLockChanges(() -> {
+                    awaitCompletionOrPendingWork();
+                    return null;
+                });
+            }
+        }
+
+        rethrowFailures();
     }
 
-    private void waitForWorkToComplete() {
-        // Release worker lease while waiting
+    /**
+     * Await either completion of the queue or the presence of pending constrained work which should be run by this thread.
+     *
+     * <p>
+     * Despite the fact that normally most constrained work will have been processed before this method is called,
+     * it is possible that running work submits constrained work to this queue. In that case, we need this thread
+     * to run that work, otherwise we would run into <a href="https://github.com/gradle/gradle/issues/37613">
+     * https://github.com/gradle/gradle/issues/37613</a> again.
+     */
+    private void awaitCompletionOrPendingWork() {
         workerLeases.blocking(() -> {
             lock.lock();
             try {
-                // Wait for any work still running in other threads
-                while (pendingOperations > 0) {
-                    try {
-                        operationsComplete.await();
-                    } catch (InterruptedException e) {
-                        throw UncheckedException.throwAsUncheckedException(e);
-                    }
+                while (outstandingOperations > 0 && constrainedQueue.isEmpty()) {
+                    waiterWorkStateChanged.await();
                 }
-
-                queueState = QueueState.Done;
-                if (!failures.isEmpty()) {
-                    throw new MultipleBuildOperationFailures(failures, logLocation);
-                }
+            } catch (InterruptedException e) {
+                throw UncheckedException.throwAsUncheckedException(e);
             } finally {
                 lock.unlock();
             }
         });
-    }
-
-    private void addFailure(Throwable failure) {
-        lock.lock();
-        try {
-            failures.add(failure);
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    private void completeOperations(int count) {
-        lock.lock();
-        try {
-            pendingOperations = pendingOperations - count;
-            operationsComplete.signalAll();
-        } finally {
-            lock.unlock();
-        }
     }
 
     @Override
@@ -167,99 +258,54 @@ class DefaultBuildOperationQueue<T extends BuildOperation> implements BuildOpera
         this.logLocation = logLocation;
     }
 
-    private class WorkerRunnable implements Runnable {
+    private void rethrowFailures() {
+        List<Throwable> failures = ImmutableList.copyOf(this.failures);
+        if (!failures.isEmpty()) {
+            throw new MultipleBuildOperationFailures(failures, logLocation);
+        }
+    }
+
+    private final class OperationRunnable implements Runnable {
+        private final T operation;
+
+        OperationRunnable(T operation) {
+            this.operation = operation;
+        }
+
         @Override
         public void run() {
             try {
-                T operation;
-                while ((operation = waitForNextOperation()) != null) {
-                    runBatch(operation);
+                // A cancelled queue still has to account for this operation, so skip the work rather than return
+                if (!isCancelled()) {
+                    CurrentBuildOperationRef.instance().with(parent, () -> {
+                        if (allowAccessToProjectState) {
+                            runOperation();
+                        } else {
+                            // Disallow this thread from making any changes to the project locks while it is running the work. This implies that this thread will not
+                            // block waiting for access to some other project, which means it can proceed even if some other thread is waiting for a project lock it
+                            // holds without causing a deadlock. This in turn implies that this thread does not need to release the project locks it holds while
+                            // blocking waiting for an operation to complete and does not need to deal with another thread stealing its project lock(s) while blocking.
+                            //
+                            // See {@link ProjectLeaseRegistry#whileDisallowingProjectLockChanges} for more details
+                            workerLeases.whileDisallowingProjectLockChanges(() -> {
+                                runOperation();
+                                return null;
+                            });
+                        }
+                    });
                 }
             } catch (Throwable t) {
-                addFailure(t);
+                failures.add(t);
             } finally {
-                shutDown();
+                operationFinished();
             }
         }
 
-        @Nullable
-        private T waitForNextOperation() {
-            lock.lock();
-            try {
-                while (queueState == QueueState.Working && workQueue.isEmpty()) {
-                    try {
-                        workAvailable.await();
-                    } catch (InterruptedException e) {
-                        throw UncheckedException.throwAsUncheckedException(e);
-                    }
-                }
-                return getNextOperation();
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        private void runBatch(final T firstOperation) {
-            // We need to update pending count outside of withLocks() so that we don't have a race
-            // condition where the pending count is 0, but a child worker lease is still held when
-            // the parent lease is released.
-            completeOperations(
-                // Run while holding worker lease.
-                workerLeases.runAsWorkerThread(() -> {
-                    if (allowAccessToProjectState) {
-                        return doRunBatch(firstOperation);
-                    } else {
-                        // Disallow this thread from making any changes to the project locks while it is running the work. This implies that this thread will not
-                        // block waiting for access to some other project, which means it can proceed even if some other thread is waiting for a project lock it
-                        // holds without causing a deadlock. This in turn implies that this thread does not need to release the project locks it holds while
-                        // blocking waiting for an operation to complete and does not need to deal with another thread stealing its project lock(s) while blocking.
-                        //
-                        // Eventually, this should become the default and only behaviour for all worker threads and changes to locks made only when starting or
-                        // finishing an execution node. Adding this constraint here means that we can make all build operation queue workers compliant with this
-                        // constraint and then gradually roll this out to other worker threads, such as task action workers.
-                        //
-                        // See {@link ProjectLeaseRegistry#whileDisallowingProjectLockChanges} for more details
-                        return workerLeases.whileDisallowingProjectLockChanges(() -> doRunBatch(firstOperation));
-                    }
-                })
-            );
-        }
-
-        private int doRunBatch(T firstOperation) {
-            int operationCount = 0;
-            T operation = firstOperation;
-            while (operation != null) {
-                runOperation(operation);
-                operationCount++;
-                operation = getNextOperation();
-            }
-            return operationCount;
-        }
-
-        @Nullable
-        private T getNextOperation() {
-            lock.lock();
-            try {
-                return workQueue.pollFirst();
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        private void runOperation(T operation) {
+        private void runOperation() {
             try {
                 queueWorker.execute(operation);
             } catch (Throwable t) {
-                addFailure(t);
-            }
-        }
-
-        private void shutDown() {
-            lock.lock();
-            try {
-                workerCount--;
-            } finally {
-                lock.unlock();
+                failures.add(t);
             }
         }
     }

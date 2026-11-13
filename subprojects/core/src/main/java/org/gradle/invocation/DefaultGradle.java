@@ -22,6 +22,7 @@ import org.gradle.BuildListener;
 import org.gradle.BuildResult;
 import org.gradle.StartParameter;
 import org.gradle.api.Action;
+import org.gradle.api.IsolatedAction;
 import org.gradle.api.Project;
 import org.gradle.api.ProjectEvaluationListener;
 import org.gradle.api.UnknownDomainObjectException;
@@ -29,7 +30,6 @@ import org.gradle.api.initialization.IncludedBuild;
 import org.gradle.api.initialization.Settings;
 import org.gradle.api.internal.BuildScopeListenerRegistrationListener;
 import org.gradle.api.internal.GradleInternal;
-import org.gradle.api.internal.MutationGuards;
 import org.gradle.api.internal.SettingsInternal;
 import org.gradle.api.internal.StartParameterInternal;
 import org.gradle.api.internal.file.FileResolver;
@@ -38,108 +38,123 @@ import org.gradle.api.internal.initialization.ScriptHandlerFactory;
 import org.gradle.api.internal.plugins.DefaultObjectConfigurationAction;
 import org.gradle.api.internal.plugins.PluginManagerInternal;
 import org.gradle.api.internal.project.AbstractPluginAware;
+import org.gradle.api.internal.project.CrossBuildModelAccess;
 import org.gradle.api.internal.project.CrossProjectConfigurator;
 import org.gradle.api.internal.project.ProjectInternal;
-import org.gradle.api.internal.project.ProjectRegistry;
+import org.gradle.api.internal.project.ProjectState;
 import org.gradle.api.invocation.Gradle;
+import org.gradle.api.invocation.GradleLifecycle;
+import org.gradle.api.model.ObjectFactory;
+import org.gradle.api.provider.ProviderFactory;
 import org.gradle.api.services.BuildServiceRegistry;
 import org.gradle.configuration.ScriptPluginFactory;
 import org.gradle.configuration.internal.ListenerBuildOperationDecorator;
 import org.gradle.execution.taskgraph.TaskExecutionGraphInternal;
 import org.gradle.initialization.ClassLoaderScopeRegistry;
+import org.gradle.initialization.SettingsState;
 import org.gradle.internal.Cast;
 import org.gradle.internal.InternalBuildAdapter;
+import org.gradle.internal.InternalListener;
 import org.gradle.internal.MutableActionSet;
+import org.gradle.internal.build.BuildIdentity;
 import org.gradle.internal.build.BuildState;
 import org.gradle.internal.build.PublicBuildPath;
 import org.gradle.internal.composite.IncludedBuildInternal;
-import org.gradle.internal.enterprise.core.GradleEnterprisePluginManager;
 import org.gradle.internal.event.ListenerBroadcast;
 import org.gradle.internal.event.ListenerManager;
 import org.gradle.internal.installation.CurrentGradleInstallation;
 import org.gradle.internal.installation.GradleInstallation;
 import org.gradle.internal.resource.TextUriResourceLoader;
 import org.gradle.internal.service.ServiceRegistry;
-import org.gradle.internal.service.scopes.ServiceRegistryFactory;
 import org.gradle.listener.ClosureBackedMethodInvocationDispatch;
 import org.gradle.util.GradleVersion;
 import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import javax.inject.Inject;
+import java.io.Closeable;
 import java.io.File;
 import java.util.Collection;
 import java.util.List;
 import java.util.function.Supplier;
 
-public abstract class DefaultGradle extends AbstractPluginAware implements GradleInternal {
+public abstract class DefaultGradle extends AbstractPluginAware implements GradleInternal, Closeable {
 
-    private SettingsInternal settings;
-    private ProjectInternal rootProject;
-    private ProjectInternal defaultProject;
-    private final BuildState parent;
+    private final BuildIdentity buildIdentity;
+    private final BuildState buildState;
     private final StartParameter startParameter;
-    private final ServiceRegistry services;
+    private final ServiceRegistry buildScopeServices;
+    private final CrossProjectConfigurator crossProjectConfigurator;
+    private final IsolatedProjectEvaluationListenerProvider isolatedProjectEvaluationListenerProvider;
+    private final GradleLifecycleActionExecutor gradleLifecycleActionExecutor;
+    private final CrossBuildModelAccess crossBuildModelAccess;
+
+    // Mutable State
     private final ListenerBroadcast<BuildListener> buildListenerBroadcast;
     private final ListenerBroadcast<ProjectEvaluationListener> projectEvaluationListenerBroadcast;
-    private final CrossProjectConfigurator crossProjectConfigurator;
-    private List<IncludedBuildInternal> includedBuilds;
-    private final MutableActionSet<Project> rootProjectActions = new MutableActionSet<Project>();
+    private final MutableActionSet<Project> rootProjectActions = new MutableActionSet<>();
+    private @Nullable List<IncludedBuildInternal> includedBuilds;
+    private @Nullable GradleLifecycle lifecycle;
+    private @Nullable Supplier<? extends ClassLoaderScope> classLoaderScope;
+    private @Nullable ClassLoaderScope baseProjectClassLoaderScope;
+    private @Nullable SettingsState settings;
+    private @Nullable ProjectState defaultProject;
     private boolean projectsLoaded;
-    private Path identityPath;
-    private Supplier<? extends ClassLoaderScope> classLoaderScope;
-    private ClassLoaderScope baseProjectClassLoaderScope;
 
-    public DefaultGradle(@Nullable BuildState parent, StartParameter startParameter, ServiceRegistryFactory parentRegistry) {
-        this.parent = parent;
+    @SuppressWarnings("this-escape")
+    public DefaultGradle(BuildIdentity buildIdentity, BuildState buildState, StartParameter startParameter, ServiceRegistry buildScopeServices) {
+        this.buildIdentity = buildIdentity;
+        this.buildState = buildState;
         this.startParameter = startParameter;
-        this.services = parentRegistry.createFor(this);
-        this.crossProjectConfigurator = services.get(CrossProjectConfigurator.class);
-        buildListenerBroadcast = getListenerManager().createAnonymousBroadcaster(BuildListener.class);
-        projectEvaluationListenerBroadcast = getListenerManager().createAnonymousBroadcaster(ProjectEvaluationListener.class);
+        this.buildScopeServices = buildScopeServices;
+        this.crossProjectConfigurator = buildScopeServices.get(CrossProjectConfigurator.class);
+        this.isolatedProjectEvaluationListenerProvider = buildScopeServices.get(IsolatedProjectEvaluationListenerProvider.class);
+        this.gradleLifecycleActionExecutor = buildScopeServices.get(GradleLifecycleActionExecutor.class);
+        this.crossBuildModelAccess = buildScopeServices.get(CrossBuildModelAccess.class);
+
+        this.buildListenerBroadcast = getListenerManager().createAnonymousBroadcaster(BuildListener.class);
+        this.projectEvaluationListenerBroadcast = getListenerManager().createAnonymousBroadcaster(ProjectEvaluationListener.class);
 
         buildListenerBroadcast.add(new InternalBuildAdapter() {
             @Override
             public void projectsLoaded(Gradle gradle) {
+                ProjectEvaluationListener isolatedListener = isolatedProjectEvaluationListenerProvider.isolateFor(DefaultGradle.this);
+
                 if (!rootProjectActions.isEmpty()) {
-                    services.get(CrossProjectConfigurator.class).rootProject(rootProject, rootProjectActions);
+                    buildState.getRootProject().applyToMutableState(rootProjectModel -> {
+                        gradleLifecycleActionExecutor.executeBeforeProjectFor(rootProjectModel);
+                        buildScopeServices.get(CrossProjectConfigurator.class).rootProject(rootProjectModel, rootProjectActions);
+                    });
+                }
+                if (isolatedListener != null) {
+                    projectEvaluationListenerBroadcast.add(isolatedListener);
                 }
                 projectsLoaded = true;
             }
         });
-
-        if (parent == null) {
-            services.get(GradleEnterprisePluginManager.class).registerMissingPluginWarning(this);
-        }
     }
 
     @Override
     public String toString() {
-        return rootProject == null ? "build" : ("build '" + rootProject.getName() + "'");
+        return getOwner().getDisplayName().getDisplayName();
+    }
+
+    @Override
+    public String getBuildPath() {
+        return getIdentityPath().asString();
     }
 
     @Override
     public Path getIdentityPath() {
-        if (identityPath == null) {
-            identityPath = services.get(PublicBuildPath.class).getBuildPath();
-        }
-        return identityPath;
+        return buildIdentity.getBuildPath();
     }
 
     @Override
-    public String contextualize(String description) {
-        if (isRootBuild()) {
-            return description;
-        } else {
-            Path contextPath = getIdentityPath();
-            String context = contextPath == null ? getStartParameter().getCurrentDir().getName() : contextPath.getPath();
-            return description + " (" + context + ")";
-        }
-    }
-
-    @Override
-    public GradleInternal getParent() {
-        return parent == null ? null : parent.getMutableModel();
+    public @Nullable GradleInternal getParent() {
+        BuildState parent = buildState.getParent();
+        return parent != null
+            ? crossBuildModelAccess.access(this, parent.getMutableModel())
+            : null;
     }
 
     @Override
@@ -154,12 +169,12 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
 
     @Override
     public boolean isRootBuild() {
-        return parent == null;
+        return buildIdentity.isRootBuild();
     }
 
     @Override
     public BuildState getOwner() {
-        return getServices().get(BuildState.class);
+        return buildState;
     }
 
     @Override
@@ -168,7 +183,7 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     }
 
     @Override
-    public File getGradleHomeDir() {
+    public @Nullable File getGradleHomeDir() {
         GradleInstallation gradleInstallation = getCurrentGradleInstallation().getInstallation();
         return gradleInstallation == null ? null : gradleInstallation.getGradleHome();
     }
@@ -181,6 +196,40 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     @Override
     public StartParameterInternal getStartParameter() {
         return (StartParameterInternal) startParameter;
+    }
+
+    @Override
+    public GradleLifecycle getLifecycle() {
+        if (lifecycle == null) {
+            lifecycle = instantiateGradleLifecycle();
+        }
+        return lifecycle;
+    }
+
+    @Override
+    public void resetState() {
+        classLoaderScope = null;
+        baseProjectClassLoaderScope = null;
+        defaultProject = null;
+        projectsLoaded = false;
+        includedBuilds = null;
+        rootProjectActions.clear();
+        isolatedProjectEvaluationListenerProvider.clear();
+        buildListenerBroadcast.removeAll();
+        projectEvaluationListenerBroadcast.removeAll();
+        getTaskGraph().resetState();
+        if (settings != null) {
+            settings.close();
+            settings = null;
+        }
+    }
+
+    @Override
+    public void close() {
+        if (settings != null) {
+            settings.close();
+            settings = null;
+        }
     }
 
     @Override
@@ -208,25 +257,22 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
         if (settings == null) {
             throw new IllegalStateException("The settings are not yet available for " + this + ".");
         }
-        return settings;
+        return settings.getSettings();
     }
 
     @Override
-    public void setSettings(SettingsInternal settings) {
+    public void attachSettings(@Nullable SettingsState settings) {
+        if (this.settings != null) {
+            this.settings.close();
+        }
         this.settings = settings;
     }
 
     @Override
     public ProjectInternal getRootProject() {
-        if (rootProject == null) {
-            throw new IllegalStateException("The root project is not yet available for " + this + ".");
-        }
-        return rootProject;
-    }
-
-    @Override
-    public void setRootProject(ProjectInternal rootProject) {
-        this.rootProject = rootProject;
+        // It would be nice to assert that we have the lock here,
+        // but we need to ensure we pull an "all builds" lock in vintage mode where applicable first
+        return buildState.getRootProject().getMutableModel();
     }
 
     @Override
@@ -236,26 +282,20 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
 
     private void rootProject(String registrationPoint, Action<? super Project> action) {
         if (projectsLoaded) {
-            assert rootProject != null;
-            action.execute(rootProject);
+            buildState.getRootProject().applyToMutableState(action::execute);
         } else {
             // only need to decorate when this callback is delayed
-            rootProjectActions.add(getListenerBuildOperationDecorator().decorate(registrationPoint, action));
+            rootProjectActions.add(decorate(registrationPoint, action));
         }
     }
 
     @Override
     public void allprojects(final Action<? super Project> action) {
-        rootProject("Gradle.allprojects", new Action<Project>() {
-            @Override
-            public void execute(Project project) {
-                project.allprojects(action);
-            }
-        });
+        rootProject("Gradle.allprojects", project -> project.allprojects(action));
     }
 
     @Override
-    public ProjectInternal getDefaultProject() {
+    public ProjectState getDefaultProjectState() {
         if (defaultProject == null) {
             throw new IllegalStateException("The default project is not yet available for " + this + ".");
         }
@@ -263,13 +303,17 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     }
 
     @Override
-    public void setDefaultProject(ProjectInternal defaultProject) {
+    public void setDefaultProjectState(ProjectState defaultProject) {
         this.defaultProject = defaultProject;
     }
 
     @Inject
     @Override
     public abstract TaskExecutionGraphInternal getTaskGraph();
+
+    @Inject
+    @Override
+    public abstract ProviderFactory getProviders();
 
     @Override
     public ProjectEvaluationListener addProjectEvaluationListener(ProjectEvaluationListener listener) {
@@ -283,36 +327,32 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     }
 
     private void assertProjectMutatingMethodAllowed(String methodName) {
-        MutationGuards.of(crossProjectConfigurator).assertMutationAllowed(methodName, this, Gradle.class);
+        crossProjectConfigurator.getLazyBehaviorGuard().assertEagerContext(methodName, this, Gradle.class);
     }
 
     @Override
-    public void beforeProject(Closure closure) {
-        assertProjectMutatingMethodAllowed("beforeProject(Closure)");
-        projectEvaluationListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch("beforeEvaluate", getListenerBuildOperationDecorator().decorate("Gradle.beforeProject", Cast.<Closure<?>>uncheckedNonnullCast(closure))));
+    public void beforeProject(@SuppressWarnings("rawtypes") Closure closure) {
+        registerProjectEvaluationListener("Gradle.beforeProject", "beforeEvaluate", "beforeProject(Closure)", closure);
     }
 
     @Override
     public void beforeProject(Action<? super Project> action) {
-        assertProjectMutatingMethodAllowed("beforeProject(Action)");
-        projectEvaluationListenerBroadcast.add("beforeEvaluate", getListenerBuildOperationDecorator().decorate("Gradle.beforeProject", action));
+        registerProjectEvaluationListener("Gradle.beforeProject", "beforeEvaluate", "beforeProject(Action)", action);
     }
 
     @Override
-    public void afterProject(Closure closure) {
-        assertProjectMutatingMethodAllowed("afterProject(Closure)");
-        projectEvaluationListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch("afterEvaluate", getListenerBuildOperationDecorator().decorate("Gradle.afterProject", Cast.<Closure<?>>uncheckedNonnullCast(closure))));
+    public void afterProject(@SuppressWarnings("rawtypes") Closure closure) {
+        registerProjectEvaluationListener("Gradle.afterProject", "afterEvaluate", "afterProject(Closure)", closure);
     }
 
     @Override
     public void afterProject(Action<? super Project> action) {
-        assertProjectMutatingMethodAllowed("afterProject(Action)");
-        projectEvaluationListenerBroadcast.add("afterEvaluate", getListenerBuildOperationDecorator().decorate("Gradle.afterProject", action));
+        registerProjectEvaluationListener("Gradle.afterProject", "afterEvaluate", "afterProject(Action)", action);
     }
 
     @Override
     public void beforeSettings(Closure<?> closure) {
-        buildListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch("beforeSettings", closure));
+        registerBuildListener("beforeSettings", closure);
     }
 
     @Override
@@ -321,8 +361,8 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     }
 
     @Override
-    public void settingsEvaluated(Closure closure) {
-        buildListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch("settingsEvaluated", closure));
+    public void settingsEvaluated(@SuppressWarnings("rawtypes") Closure closure) {
+        registerBuildListener("settingsEvaluated", closure);
     }
 
     @Override
@@ -331,36 +371,34 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     }
 
     @Override
-    public void projectsLoaded(Closure closure) {
-        assertProjectMutatingMethodAllowed("projectsLoaded(Closure)");
-        buildListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch("projectsLoaded", getListenerBuildOperationDecorator().decorate("Gradle.projectsLoaded", Cast.<Closure<?>>uncheckedNonnullCast(closure))));
+    public void projectsLoaded(@SuppressWarnings("rawtypes") Closure closure) {
+        registerBuildListener("Gradle.projectsLoaded", "projectsLoaded", "projectsLoaded(Closure)", closure);
     }
 
     @Override
     public void projectsLoaded(Action<? super Gradle> action) {
-        assertProjectMutatingMethodAllowed("projectsLoaded(Action)");
-        buildListenerBroadcast.add("projectsLoaded", getListenerBuildOperationDecorator().decorate("Gradle.projectsLoaded", action));
+        registerBuildListener("Gradle.projectsLoaded", "projectsLoaded", "projectsLoaded(Action)", action);
     }
 
     @Override
-    public void projectsEvaluated(Closure closure) {
-        assertProjectMutatingMethodAllowed("projectsEvaluated(Closure)");
-        buildListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch("projectsEvaluated", getListenerBuildOperationDecorator().decorate("Gradle.projectsEvaluated", Cast.<Closure<?>>uncheckedNonnullCast(closure))));
+    public void projectsEvaluated(@SuppressWarnings("rawtypes") Closure closure) {
+        registerBuildListener("Gradle.projectsEvaluated", "projectsEvaluated", "projectsEvaluated(Closure)", closure);
     }
 
     @Override
     public void projectsEvaluated(Action<? super Gradle> action) {
-        assertProjectMutatingMethodAllowed("projectsEvaluated(Action)");
-        buildListenerBroadcast.add("projectsEvaluated", getListenerBuildOperationDecorator().decorate("Gradle.projectsEvaluated", action));
+        registerBuildListener("Gradle.projectsEvaluated", "projectsEvaluated", "projectsEvaluated(Action)", action);
     }
 
     @Override
-    public void buildFinished(Closure closure) {
+    @Deprecated
+    public void buildFinished(@SuppressWarnings("rawtypes") Closure closure) {
         notifyListenerRegistration("Gradle.buildFinished", closure);
-        buildListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch("buildFinished", closure));
+        registerBuildListener("buildFinished", closure);
     }
 
     @Override
+    @Deprecated
     public void buildFinished(Action<? super BuildResult> action) {
         notifyListenerRegistration("Gradle.buildFinished", action);
         buildListenerBroadcast.add("buildFinished", action);
@@ -371,24 +409,71 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
         addListener("Gradle.addListener", listener);
     }
 
-    private void addListener(String registrationPoint, Object listener) {
-        notifyListenerRegistration(registrationPoint, listener);
-        getListenerManager().addListener(getListenerBuildOperationDecorator().decorateUnknownListener(registrationPoint, listener));
-    }
-
-    private void notifyListenerRegistration(String registrationPoint, Object listener) {
-        getListenerManager().getBroadcaster(BuildScopeListenerRegistrationListener.class)
-            .onBuildScopeListenerRegistration(listener, registrationPoint, this);
-    }
-
     @Override
     public void removeListener(Object listener) {
         // do same decoration as in addListener to remove correctly
-        getListenerManager().removeListener(getListenerBuildOperationDecorator().decorateUnknownListener(null, listener));
+        getListenerManager().removeListener(decorateUnknownListener(null, listener));
+    }
+
+    private void registerProjectEvaluationListener(String registrationPoint, String methodName, String signature, Action<? super Project> action) {
+        assertProjectMutatingMethodAllowed(signature);
+        projectEvaluationListenerBroadcast.add(methodName, decorate(registrationPoint, action));
+    }
+
+    private void registerProjectEvaluationListener(String registrationPoint, String methodName, String signature, Closure<?> closure) {
+        assertProjectMutatingMethodAllowed(signature);
+        projectEvaluationListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch(methodName, decorate(registrationPoint, closure)));
+    }
+
+    private void registerBuildListener(String methodName, Closure<?> closure) {
+        buildListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch(methodName, closure));
+    }
+
+    private void registerBuildListener(String registrationPoint, String methodName, String signature, Action<? super Gradle> action) {
+        assertProjectMutatingMethodAllowed(signature);
+        buildListenerBroadcast.add(methodName, decorate(registrationPoint, action));
+    }
+
+    private void registerBuildListener(String registrationPoint, String methodName, String signature, Closure<?> closure) {
+        assertProjectMutatingMethodAllowed(signature);
+        buildListenerBroadcast.add(new ClosureBackedMethodInvocationDispatch(methodName, decorate(registrationPoint, closure)));
+    }
+
+    private void addListener(String registrationPoint, Object listener) {
+        notifyListenerRegistration(registrationPoint, listener);
+        getListenerManager().addListener(decorateUnknownListener(registrationPoint, listener));
+    }
+
+    private void notifyListenerRegistration(String registrationPoint, Object listener) {
+        if (listener instanceof InternalListener) {
+            // Internal listeners are always allowed: we know their lifecycle and ensure there are no problems when configuration cache is reused.
+            // Dispatching the call has an extra performance cost, so we bail out early here.
+            return;
+        }
+        getBuildScopeListenerRegistrationListener().onBuildScopeListenerRegistration(listener, registrationPoint, this);
+    }
+
+    private BuildScopeListenerRegistrationListener getBuildScopeListenerRegistrationListener() {
+        return getListenerManager().getBroadcaster(BuildScopeListenerRegistrationListener.class);
+    }
+
+    private Object decorateUnknownListener(String registrationPoint, Object listener) {
+        return getListenerBuildOperationDecorator().decorateUnknownListener(registrationPoint, listener);
+    }
+
+    private Closure<?> decorate(String registrationPoint, Closure<?> closure) {
+        return getListenerBuildOperationDecorator().decorate(registrationPoint, Cast.<Closure<?>>uncheckedNonnullCast(closure));
+    }
+
+    private <T> Action<T> decorate(String registrationPoint, Action<T> action) {
+        return getListenerBuildOperationDecorator().decorate(registrationPoint, action);
     }
 
     @Override
+    @Deprecated
     public void useLogger(Object logger) {
+        // org.gradle.internal.cc.impl.DeprecatedFeaturesListener emits a deprecation warning for this method.
+        notifyListenerRegistration("Gradle.useLogger", logger);
         getListenerManager().useLogger(logger);
     }
 
@@ -446,13 +531,7 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
 
     @Override
     public ServiceRegistry getServices() {
-        return services;
-    }
-
-    @Override
-    @Inject
-    public ServiceRegistryFactory getServiceRegistryFactory() {
-        throw new UnsupportedOperationException();
+        return buildScopeServices;
     }
 
     @Override
@@ -486,10 +565,6 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     @Inject
     protected abstract ClassLoaderScopeRegistry getClassLoaderScopeRegistry();
 
-    @Override
-    @Inject
-    public abstract ProjectRegistry<ProjectInternal> getProjectRegistry();
-
     @Inject
     protected abstract TextUriResourceLoader.Factory getResourceLoaderFactory();
 
@@ -518,4 +593,40 @@ public abstract class DefaultGradle extends AbstractPluginAware implements Gradl
     @Override
     @Inject
     public abstract PublicBuildPath getPublicBuildPath();
+
+    /**
+     * Instantiate {@link DefaultGradleLifecycle} via {@link ObjectFactory} in order to get
+     * {@link Closure} overloads for the {@link IsolatedAction} based methods.
+     */
+    private DefaultGradleLifecycle instantiateGradleLifecycle() {
+        return buildScopeServices.get(ObjectFactory.class).newInstance(DefaultGradleLifecycle.class, this);
+    }
+
+    static class DefaultGradleLifecycle implements GradleLifecycle {
+
+        private final DefaultGradle gradle;
+
+        @Inject
+        public DefaultGradleLifecycle(DefaultGradle gradle) {
+            this.gradle = gradle;
+        }
+
+        @Override
+        public void beforeProject(IsolatedAction<? super Project> action) {
+            assertBeforeProjectsLoaded("beforeProject");
+            gradle.isolatedProjectEvaluationListenerProvider.beforeProject(action);
+        }
+
+        @Override
+        public void afterProject(IsolatedAction<? super Project> action) {
+            assertBeforeProjectsLoaded("afterProject");
+            gradle.isolatedProjectEvaluationListenerProvider.afterProject(action);
+        }
+
+        private void assertBeforeProjectsLoaded(String methodName) {
+            if (gradle.projectsLoaded) {
+                throw new IllegalStateException("GradleLifecycle#" + methodName + " cannot be called after settings have been evaluated.");
+            }
+        }
+    }
 }

@@ -14,10 +14,7 @@
  * limitations under the License.
  */
 
-import gradlebuild.basics.accessors.groovy
-
-import org.gradle.api.plugins.internal.JvmPluginsHelper
-import org.gradle.plugins.ide.idea.model.IdeaModel
+import gradlebuild.integrationtests.configureTestSourceSetInIde
 
 /**
  * Test Fixtures Plugin.
@@ -30,9 +27,14 @@ import org.gradle.plugins.ide.idea.model.IdeaModel
  * Configures the Project as a test fixtures consumer according to the `testFixtures` extension configuration.
  */
 plugins {
-    `java-library`
     `java-test-fixtures`
+    groovy
     id("gradlebuild.dependency-modules")
+    id("gradlebuild.jvm-compile")
+}
+
+jvmCompile {
+    addCompilationFrom(sourceSets.named("testFixtures"))
 }
 
 // The below mimics what the java-library plugin does, but creating a library of test fixtures instead.
@@ -44,44 +46,32 @@ sourceSets.matching { it.name.endsWith("Test") }.all {
     )
 }
 
-val testFixturesApi by configurations
-val testFixturesImplementation by configurations
-val testFixturesRuntimeOnly by configurations
-val testFixturesRuntimeElements by configurations
-val testFixturesApiElements by configurations
+val testFixturesApi = configurations.getByName("testFixturesApi")
+val testFixturesImplementation = configurations.getByName("testFixturesImplementation")
+val testFixturesRuntimeOnly = configurations.getByName("testFixturesRuntimeOnly")
+val testFixturesRuntimeElements = configurations.getByName("testFixturesRuntimeElements")
+val testFixturesApiElements = configurations.getByName("testFixturesApiElements")
 
 // Required due to: https://github.com/gradle/gradle/issues/13278
 testFixturesRuntimeElements.extendsFrom(testFixturesRuntimeOnly)
 
 // do not attempt to find projects when the plugin is applied just to generate accessors
 if (project.name != "gradle-kotlin-dsl-accessors" && project.name != "test" /* remove once wrapper is updated */) {
+    val libs = project.versionCatalogs.named("libs")
+    val testLibs = project.versionCatalogs.named("testLibs")
+
     dependencies {
         testFixturesApi(project(":internal-testing"))
         // platform
         testFixturesImplementation(platform(project(":distributions-dependencies")))
 
         // add a set of default dependencies for fixture implementation
-        testFixturesImplementation(libs.junit)
-        testFixturesImplementation(libs.groovy)
-        testFixturesImplementation(libs.spock)
-        testFixturesRuntimeOnly(libs.bytebuddy)
-        testFixturesRuntimeOnly(libs.cglib)
+        testFixturesImplementation(testLibs.findLibrary("junit").get())
+        testFixturesImplementation(libs.findLibrary("groovy").get())
+        testFixturesImplementation(testLibs.findLibrary("spock").get())
+        testFixturesRuntimeOnly(testLibs.findLibrary("bytebuddy").get())
+        testFixturesRuntimeOnly(testLibs.findLibrary("cglib").get())
     }
-}
-
-// Add an outgoing variant allowing to select the exploded resources directory
-// as this is required at least by one project (idePlay)
-val processResources = tasks.named<ProcessResources>("processTestFixturesResources")
-testFixturesRuntimeElements.outgoing.variants.maybeCreate("resources").run {
-    attributes.attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
-    attributes.attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
-    attributes.attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, objects.named(LibraryElements.RESOURCES))
-
-    artifact(object : JvmPluginsHelper.IntermediateJavaArtifact(ArtifactTypeDefinition.JVM_RESOURCES_DIRECTORY, processResources) {
-        override fun getFile(): File {
-            return processResources.get().destinationDir
-        }
-    })
 }
 
 // Do not publish test fixture, we use them only internal for now
@@ -93,13 +83,4 @@ javaComponent.withVariantsFromConfiguration(testFixturesApiElements) {
     skip()
 }
 
-plugins.withType<IdeaPlugin> {
-    configure<IdeaModel> {
-        module {
-            val testFixtures = sourceSets.testFixtures.get()
-            testSourceDirs = testSourceDirs + testFixtures.java.srcDirs
-            testSourceDirs = testSourceDirs + testFixtures.groovy.srcDirs
-            testResourceDirs = testResourceDirs + testFixtures.resources.srcDirs
-        }
-    }
-}
+configureTestSourceSetInIde(sourceSets.testFixtures.get())

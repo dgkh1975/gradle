@@ -16,7 +16,6 @@
 
 package org.gradle.api.tasks;
 
-import org.gradle.api.Incubating;
 import org.gradle.internal.HasInternalProtocol;
 
 /**
@@ -31,25 +30,7 @@ public interface TaskFilePropertyBuilder extends TaskPropertyBuilder {
      *
      * <p>If the method is not called, or if it is called with {@code null}, a name
      * will be assigned to the property automatically.</p>
+     * @since 4.3
      */
     TaskFilePropertyBuilder withPropertyName(String propertyName);
-
-    /**
-     * Declares this property as being untracked.
-     *
-     * @since 7.3
-     * @see org.gradle.api.tasks.Untracked
-     */
-    @Incubating
-    TaskFilePropertyBuilder untracked();
-
-    /**
-     * Declares whether Gradle should track this property.
-     *
-     * @param tracked Whether the property should be tracked
-     * @since 7.3
-     * @see org.gradle.api.tasks.Untracked
-     */
-    @Incubating
-    TaskFilePropertyBuilder tracked(boolean tracked);
 }

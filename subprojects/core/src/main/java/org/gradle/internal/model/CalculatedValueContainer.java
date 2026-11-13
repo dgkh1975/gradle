@@ -17,15 +17,14 @@
 package org.gradle.internal.model;
 
 import org.gradle.api.Project;
-import org.gradle.api.internal.initialization.RootScriptDomainObjectContext;
 import org.gradle.api.internal.tasks.NodeExecutionContext;
 import org.gradle.api.internal.tasks.TaskDependencyResolveContext;
 import org.gradle.api.internal.tasks.WorkNodeAction;
 import org.gradle.internal.DisplayName;
 import org.gradle.internal.Try;
 import org.gradle.internal.resources.ProjectLeaseRegistry;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import javax.annotation.concurrent.ThreadSafe;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -41,9 +40,12 @@ import java.util.concurrent.locks.ReentrantLock;
  * </p>
  *
  * <p>You should use {@link CalculatedValueContainerFactory} to create instances of this type.</p>
+ *
+ * <p>This type can hold null as the computed value.</p>
  */
 @ThreadSafe
-public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>> implements CalculatedValue<T>, WorkNodeAction {
+public class CalculatedValueContainer<T extends @Nullable Object, S extends ValueCalculator<? extends T>> implements CalculatedValue<T>, WorkNodeAction {
+
     private final DisplayName displayName;
     // Null when the value has been calculated and assigned to the result field. When not null the result has not been calculated
     // or is currently being calculated or has just been calculated. It is possible for both this field and the result field to be
@@ -61,7 +63,7 @@ public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>>
      */
     CalculatedValueContainer(DisplayName displayName, S supplier, ProjectLeaseRegistry projectLeaseRegistry, NodeExecutionContext defaultContext) {
         this.displayName = displayName;
-        this.calculationState = new CalculationState<>(displayName, supplier, projectLeaseRegistry, defaultContext);
+        this.calculationState = new CalculationState<>(supplier, projectLeaseRegistry, defaultContext);
     }
 
     /**
@@ -82,16 +84,6 @@ public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>>
     @Override
     public T get() throws IllegalStateException {
         return getValue().get();
-    }
-
-    @Override
-    public T getOrNull() {
-        Try<T> result = this.result;
-        if (result != null) {
-            return result.get();
-        } else {
-            return null;
-        }
     }
 
     @Override
@@ -149,7 +141,8 @@ public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>>
         if (calculationState != null && calculationState.supplier.usesMutableProjectState()) {
             return calculationState.supplier.getOwningProject().getOwner();
         } else {
-            return RootScriptDomainObjectContext.INSTANCE.getModel();
+            // TODO: The supplier should be able to give us a better answer than this.
+            return ModelContainer.EMPTY;
         }
     }
 
@@ -162,6 +155,17 @@ public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>>
         if (calculationState != null) {
             calculationState.supplier.visitDependencies(context);
         } // else, already calculated so has no dependencies
+    }
+
+    @Nullable
+    @Override
+    public WorkNodeAction getPreExecutionNode() {
+        CalculationState<T, S> calculationState = this.calculationState;
+        if (calculationState != null) {
+            return calculationState.supplier.getPreExecutionAction();
+        } else {
+            return null;
+        }
     }
 
     /**
@@ -186,16 +190,14 @@ public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>>
         calculationState.attachValue(this, context);
     }
 
-    private static class CalculationState<T, S extends ValueCalculator<? extends T>> {
+    private static class CalculationState<T extends @Nullable Object, S extends ValueCalculator<? extends T>> {
         final ReentrantLock lock = new ReentrantLock();
-        final DisplayName displayName;
         final S supplier;
         final ProjectLeaseRegistry projectLeaseRegistry;
         final NodeExecutionContext defaultContext;
         boolean done;
 
-        public CalculationState(DisplayName displayName, S supplier, ProjectLeaseRegistry projectLeaseRegistry, NodeExecutionContext defaultContext) {
-            this.displayName = displayName;
+        public CalculationState(S supplier, ProjectLeaseRegistry projectLeaseRegistry, NodeExecutionContext defaultContext) {
             this.supplier = supplier;
             this.projectLeaseRegistry = projectLeaseRegistry;
             this.defaultContext = defaultContext;
@@ -210,20 +212,15 @@ public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>>
                     return;
                 }
                 done = true;
-                Try<T> result = Try.ofFailable(() -> {
+
+                // Attach result and discard calculation state
+                owner.result = Try.ofFailable(() -> {
                     NodeExecutionContext effectiveContext = context;
                     if (effectiveContext == null) {
                         effectiveContext = defaultContext;
                     }
-                    T value = supplier.calculateValue(effectiveContext);
-                    if (value == null) {
-                        throw new IllegalStateException(String.format("Calculated value for %s cannot be null.", displayName));
-                    }
-                    return value;
+                    return supplier.calculateValue(effectiveContext);
                 });
-
-                // Attach result and discard calculation state
-                owner.result = result;
                 owner.calculationState = null;
             } finally {
                 releaseLock();
@@ -243,4 +240,5 @@ public class CalculatedValueContainer<T, S extends ValueCalculator<? extends T>>
             lock.unlock();
         }
     }
+
 }

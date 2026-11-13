@@ -1,5 +1,6 @@
+import gradlebuild.basics.capitalize
 import com.google.gson.Gson
-import java.net.URL
+import java.net.URI
 
 wrapperUpdateTask("nightly", "nightly")
 wrapperUpdateTask("rc", "release-candidate")
@@ -26,12 +27,15 @@ fun Project.wrapperUpdateTask(name: String, label: String) {
 
     tasks.register(configureWrapperTaskName) {
         doLast {
-            val jsonText = URL("https://services.gradle.org/versions/$label").readText()
+            val jsonText = URI("https://services.gradle.org/versions/$label").toURL().readText()
             val versionInfo = Gson().fromJson(jsonText, VersionDownloadInfo::class.java)
             println("updating wrapper to $label version: ${versionInfo.version} (downloadUrl: ${versionInfo.downloadUrl})")
             wrapperTask.get().distributionUrl = versionInfo.downloadUrl
+            // Must be set alongside distributionUrl: the Wrapper task fails if gradle-wrapper.properties
+            // already pins distributionSha256Sum but the task configuration does not supply one.
+            wrapperTask.get().distributionSha256Sum = versionInfo.checksum
         }
     }
 }
 
-data class VersionDownloadInfo(val version: String, val downloadUrl: String)
+data class VersionDownloadInfo(val version: String, val downloadUrl: String, val checksum: String)

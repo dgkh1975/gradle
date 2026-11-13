@@ -22,19 +22,20 @@ import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Multimap;
-import com.google.common.collect.Sets;
 import org.apache.commons.io.FileUtils;
 import org.apache.commons.io.filefilter.RegexFileFilter;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.Strings;
 import org.gradle.cache.CleanupProgressMonitor;
 import org.gradle.internal.IoActions;
+import org.gradle.internal.cache.MonitoredCleanupAction;
+import org.gradle.internal.versionedcache.UsedGradleVersions;
 import org.gradle.util.GradleVersion;
 import org.gradle.util.internal.DefaultGradleVersion;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nonnull;
-import javax.annotation.Nullable;
 import java.io.File;
 import java.io.FileFilter;
 import java.io.InputStream;
@@ -42,6 +43,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
@@ -54,13 +56,13 @@ import java.util.zip.ZipFile;
 import static org.apache.commons.io.filefilter.FileFilterUtils.directoryFileFilter;
 import static org.gradle.util.internal.CollectionUtils.single;
 
-public class WrapperDistributionCleanupAction implements DirectoryCleanupAction {
+public class WrapperDistributionCleanupAction implements MonitoredCleanupAction {
 
-    @VisibleForTesting static final String WRAPPER_DISTRIBUTION_FILE_PATH = "wrapper/dists";
+    public static final String WRAPPER_DISTRIBUTION_FILE_PATH = "wrapper/dists";
     private static final Logger LOGGER = LoggerFactory.getLogger(WrapperDistributionCleanupAction.class);
 
     private static final ImmutableMap<String, Pattern> JAR_FILE_PATTERNS_BY_PREFIX;
-    private static final String BUILD_RECEIPT_ZIP_ENTRY_PATH = StringUtils.removeStart(DefaultGradleVersion.RESOURCE_NAME, "/");
+    private static final String BUILD_RECEIPT_ZIP_ENTRY_PATH = Strings.CS.removeStart(DefaultGradleVersion.RESOURCE_NAME, "/");
 
     static {
         Set<String> prefixes = ImmutableSet.of(
@@ -83,14 +85,14 @@ public class WrapperDistributionCleanupAction implements DirectoryCleanupAction 
         this.usedGradleVersions = usedGradleVersions;
     }
 
-    @Nonnull
+    @NullMarked
     @Override
     public String getDisplayName() {
         return "Deleting unused Gradle distributions in " + distsDir;
     }
 
     @Override
-    public boolean execute(@Nonnull CleanupProgressMonitor progressMonitor) {
+    public boolean execute(CleanupProgressMonitor progressMonitor) {
         long maximumTimestamp = Math.max(0, System.currentTimeMillis() - TimeUnit.DAYS.toMillis(1));
         Set<GradleVersion> usedVersions = this.usedGradleVersions.getUsedGradleVersions();
         Multimap<GradleVersion, File> checksumDirsByVersion = determineChecksumDirsByVersion();
@@ -105,7 +107,7 @@ public class WrapperDistributionCleanupAction implements DirectoryCleanupAction 
     }
 
     private void deleteDistributions(GradleVersion version, Collection<File> dirs, long maximumTimestamp, CleanupProgressMonitor progressMonitor) {
-        Set<File> parentsOfDeletedDistributions = Sets.newLinkedHashSet();
+        Set<File> parentsOfDeletedDistributions = new LinkedHashSet<>();
         for (File checksumDir : dirs) {
             if (checksumDir.lastModified() > maximumTimestamp) {
                 progressMonitor.incrementSkipped();

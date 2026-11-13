@@ -15,64 +15,82 @@
  */
 
 import com.google.gson.Gson
+import com.google.gson.Strictness
 import com.google.gson.reflect.TypeToken
 import com.google.gson.stream.JsonReader
+import gradlebuild.basics.bundleGroovyMajor
 import gradlebuild.basics.repoRoot
-import gradlebuild.modules.extension.ExternalModulesExtension
-
-val libs = extensions.create<ExternalModulesExtension>("libs")
 
 applyAutomaticUpgradeOfCapabilities()
 dependencies {
+    configurations.all {
+        exclude("org.slf4j", "slf4j-simple")
+    }
     components {
         // Gradle distribution - minify: remove unused transitive dependencies
-        withLibraryDependencies<DependencyRemovalByNameRule>(libs.awsS3Core, setOf("jackson-dataformat-cbor"))
-        withLibraryDependencies<DependencyRemovalByGroupRule>(libs.jgit, setOf("com.googlecode.javaewah"))
+        applyRule<DependencyRemovalByNameRule>("com.amazonaws:aws-java-sdk-core", setOf("jackson-dataformat-cbor"))
+        applyRule<DependencyRemovalByGroupRule>("org.eclipse.jgit:org.eclipse.jgit", setOf("com.googlecode.javaewah"))
 
         // We don't need the extra annotations provided by j2objc
-        withLibraryDependencies<DependencyRemovalByNameRule>(libs.googleHttpClient, setOf("j2objc-annotations"))
+        applyRule<DependencyRemovalByNameRule>("com.google.http-client:google-http-client", setOf("j2objc-annotations"))
 
         // Read capabilities declared in capabilities.json
         readCapabilitiesFromJson()
 
-        withModule<ReplaceCglibNodepWithCglibRule>("org.spockframework:spock-core")
         // Prevent Spock from pulling in Groovy and third-party dependencies - see https://github.com/spockframework/spock/issues/899
-        withLibraryDependencies<DependencyRemovalByNameRule>(
+        applyRule<DependencyRemovalByNameRule>(
             "org.spockframework:spock-core",
             setOf("groovy-groovysh", "groovy-json", "groovy-macro", "groovy-nio", "groovy-sql", "groovy-templates", "groovy-test", "groovy-xml")
         )
-        withLibraryDependencies<DependencyRemovalByNameRule>("cglib:cglib", setOf("ant"))
+        applyRule<DependencyRemovalByNameRule>("cglib:cglib", setOf("ant"))
+
+        // We do not support running junit from Ant. Don't bundle ant-junit.
+        applyRule<DependencyRemovalByNameRule>("org.apache.groovy:groovy-ant", setOf("ant-junit"))
+
+        // GCS transitively depends on commons-logging.
+        // Ensure jcl-over-slf4j is pulled in when we use GCS so it can conflict.
+        applyRule<DependencyAdditionRule>("com.google.apis:google-api-services-storage", "org.slf4j:jcl-over-slf4j")
 
         // asciidoctorj depends on a lot of stuff, which causes `Can't create process, argument list too long` on Windows
-        withLibraryDependencies<DependencyRemovalByNameRule>("org.gradle:sample-discovery", setOf("asciidoctorj", "asciidoctorj-api"))
+        applyRule<DependencyRemovalByNameRule>("org.gradle:sample-discovery", setOf("asciidoctorj", "asciidoctorj-api"))
 
-        withModule<DowngradeXmlApisRule>("jaxen:jaxen")
-        withModule<DowngradeXmlApisRule>("jdom:jdom")
-        withModule<DowngradeXmlApisRule>("xalan:xalan")
-        withModule<DowngradeXmlApisRule>("jaxen:jaxen")
+        withModule<RemoveXmlApisRule>("jaxen:jaxen")
+        // The synthetic project used to generate precompiled script plugin accessors has no version catalogs
+        if (project.name != "gradle-kotlin-dsl-accessors") {
+            val lz4Fork = versionCatalogs.named("testLibs").findLibrary("lz4").get().get()
+            applyRule<ReplaceLz4WithMaintainedForkRule>("org.openjdk.jmc:common", "${lz4Fork.group}:${lz4Fork.name}:${lz4Fork.versionConstraint.requiredVersion}")
+        }
+        withModule<RemoveXmlApisRule>("jdom:jdom")
+        withModule<RemoveXmlApisRule>("xalan:xalan")
+        withModule<RemoveXmlApisRule>("jaxen:jaxen")
 
         // We only need "failureaccess" of Guava's dependencies
-        withLibraryDependencies<KeepDependenciesByNameRule>("com.google.guava:guava", setOf("failureaccess"))
+        applyRule<KeepDependenciesByNameRule>("com.google.guava:guava", setOf("failureaccess"))
 
         // We only need a few utility classes of this module
-        withLibraryDependencies<DependencyRemovalByNameRule>("jcifs:jcifs", setOf("servlet-api"))
+        applyRule<DependencyRemovalByNameRule>("jcifs:jcifs", setOf("servlet-api"))
+
+        // Bsh moved coordinates. Depend on the new coordinates.
+        applyRule<DependencyRemovalByGroupRule>("org.testng:testng", setOf("org.beanshell"))
+        applyRule<DependencyAdditionRule>("org.testng:testng", "org.apache-extras.beanshell:bsh")
 
         // Test dependencies - minify: remove unused transitive dependencies
-        withLibraryDependencies<DependencyRemovalByNameRule>(
-            "xyz.rogfam:littleproxy",
-            setOf("barchart-udt-bundle", "guava", "commons-cli")
+        applyRule<DependencyRemovalByNameRule>(
+            "io.github.littleproxy:littleproxy",
+            setOf("barchart-udt-bundle", "guava", "commons-cli", "netty-all")
         )
 
         // TODO: Gradle profiler should use the bundled tooling API.
         //   This should actually be handled by conflict resolution, though it doesn't seem to work.
         //   See https://github.com/gradle/gradle/issues/12002.
-        withLibraryDependencies<DependencyRemovalByNameRule>(
+        applyRule<DependencyRemovalByNameRule>(
             "org.gradle.profiler:gradle-profiler",
             setOf("gradle-tooling-api")
         )
 
-        // used by :internal-android-performance-testing > api("agp")
-        withModule<UnifyTrove4jVersionRule>("com.android.tools.external.com-intellij:intellij-core")
+        if (bundleGroovyMajor >= 5) {
+            all<GroovyTargetJvmVersionRule>()
+        }
     }
 }
 
@@ -95,7 +113,7 @@ fun readCapabilitiesFromJson() {
 
 fun readCapabilities(source: File): List<CapabilitySpec> {
     JsonReader(source.reader(Charsets.UTF_8)).use { reader ->
-        reader.isLenient = true
+        reader.strictness = Strictness.LENIENT
         return Gson().fromJson(reader)
     }
 }
@@ -111,7 +129,7 @@ abstract class CapabilityRule @Inject constructor(
     override fun execute(context: ComponentMetadataContext) {
         context.details.allVariants {
             withCapabilities {
-                addCapability("org.gradle.internal.capability", name, version)
+                addCapability("org.gradle.internal.capability", name, "${version}.original.${context.details.id.version}")
             }
         }
     }
@@ -156,7 +174,7 @@ class CapabilitySpec {
     fun ComponentMetadataHandler.declareCapabilityPreference(module: String) {
         withModule<CapabilityRule>(module) {
             params(name)
-            params("${providedBy.size + 1}")
+            params("${providedBy.size}")
         }
     }
 
@@ -170,10 +188,28 @@ class CapabilitySpec {
     fun ConfigurationContainer.forceUpgrade(to: String, version: String) = all {
         resolutionStrategy.dependencySubstitution {
             all {
-                if (providedBy.contains(requested.toString())) {
-                    useTarget("$to:$version", "Forceful upgrade of capability $name")
-                }
+                forceUpgradeIfProvided(this, to, version)
             }
+        }
+    }
+
+    private fun forceUpgradeIfProvided(substitution: DependencySubstitution, to: String, version: String) {
+        val r = substitution.requested as? ModuleComponentSelector ?: return
+        val group = r.group
+        val module = r.module
+        val expectedLength = group.length + 1 + module.length
+
+        val isProvided = providedBy.any {
+            // This method is called very often during dependency resolution.
+            // This implementation avoids allocating new strings.
+            it.length == expectedLength &&
+                it[group.length] == ':' &&
+                it.startsWith(group) &&
+                it.startsWith(module, group.length + 1)
+        }
+
+        if (isProvided) {
+            substitution.useTarget("$to:$version", "Forceful upgrade of capability $module")
         }
     }
 }
@@ -186,6 +222,19 @@ abstract class DependencyRemovalByNameRule @Inject constructor(
         context.details.allVariants {
             withDependencies {
                 removeAll { moduleToRemove.contains(it.name) }
+            }
+        }
+    }
+}
+
+
+abstract class DependencyAdditionRule @Inject constructor(
+    private val coordinates: String
+) : ComponentMetadataRule {
+    override fun execute(context: ComponentMetadataContext) {
+        context.details.allVariants {
+            withDependencies {
+                add(coordinates)
             }
         }
     }
@@ -219,49 +268,60 @@ abstract class KeepDependenciesByNameRule @Inject constructor(
 
 
 inline
-fun <reified T : ComponentMetadataRule> ComponentMetadataHandler.withLibraryDependencies(module: String, modulesToRemove: Set<String>) {
+fun <reified T : ComponentMetadataRule> ComponentMetadataHandler.applyRule(module: String, vararg modulesToRemove: Any) {
     withModule<T>(module) {
-        params(modulesToRemove)
+        params(*modulesToRemove)
     }
 }
 
 
-abstract class DowngradeXmlApisRule : ComponentMetadataRule {
+/**
+ * Lowers the JVM version Groovy publishes so that Java 8 consumers can resolve it.
+ *
+ * Groovy 5 is built for Java 11, but Gradle's client and worker code targets Java 8, so
+ * nothing in Groovy 5 matches their compile classpath. This is only safe because it applies
+ * to the `-DbundleGroovyMajor=5` coverage build, which runs on Java 17+, and because no
+ * distribution module has `src/main/groovy` - so no Java 8 module ever forks `groovyc` onto
+ * a JDK 8 launcher. The Java 8 jars it produces link against classes that cannot load on
+ * Java 8.
+ */
+abstract class GroovyTargetJvmVersionRule : ComponentMetadataRule {
     override fun execute(context: ComponentMetadataContext) {
+        if (context.details.id.group != "org.apache.groovy") {
+            return
+        }
         context.details.allVariants {
-            withDependencies {
-                filter { it.group == "xml-apis" }.forEach {
-                    it.version { require("1.4.01") }
-                    it.because("Gradle has trouble with the versioning scheme and pom redirects in higher versions")
-                }
+            attributes {
+                attribute(TargetJvmVersion.TARGET_JVM_VERSION_ATTRIBUTE, 8)
             }
         }
     }
 }
 
 
-abstract class ReplaceCglibNodepWithCglibRule : ComponentMetadataRule {
+// org.lz4:lz4-java is abandoned and has unfixed CVEs; at.yawk.lz4 is its maintained drop-in fork
+abstract class ReplaceLz4WithMaintainedForkRule @Inject constructor(
+    private val forkCoordinates: String
+) : ComponentMetadataRule {
     override fun execute(context: ComponentMetadataContext) {
         context.details.allVariants {
             withDependencies {
-                filter { it.name == "cglib-nodep" }.forEach {
-                    add("${it.group}:cglib:3.2.7")
+                if (removeAll { it.group == "org.lz4" && it.name == "lz4-java" }) {
+                    add(forkCoordinates)
                 }
-                removeAll { it.name == "cglib-nodep" }
             }
         }
     }
 }
 
-// https://youtrack.jetbrains.com/issue/IDEA-261387
-abstract class UnifyTrove4jVersionRule : ComponentMetadataRule {
+/**
+ * The JDK now provides these.
+ */
+abstract class RemoveXmlApisRule : ComponentMetadataRule {
     override fun execute(context: ComponentMetadataContext) {
         context.details.allVariants {
             withDependencies {
-                if (any { it.name == "trove4j" }) {
-                    removeAll { it.name == "trove4j" }
-                    add("org.jetbrains.intellij.deps:trove4j:trove4j")
-                }
+                removeAll { it.group == "xml-apis" }
             }
         }
     }

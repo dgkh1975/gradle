@@ -18,10 +18,10 @@ package common
 
 enum class JvmCategory(
     override val vendor: JvmVendor,
-    override val version: JvmVersion
+    override val version: JvmVersion,
 ) : Jvm {
-    MIN_VERSION(JvmVendor.oracle, JvmVersion.java8),
-    MAX_VERSION(JvmVendor.oracle, JvmVersion.java17),
-    SANTA_TRACKER_SMOKE_TEST_VERSION(JvmVendor.openjdk, JvmVersion.java11),
-    EXPERIMENTAL_VERSION(JvmVendor.oracle, JvmVersion.java18)
+    MIN_VERSION(JvmVendor.OPENJDK, JvmVersion.JAVA_17),
+    MAX_LTS_VERSION(JvmVendor.OPENJDK, JvmVersion.JAVA_25),
+    MAX_VERSION(JvmVendor.OPENJDK, JvmVersion.JAVA_27),
+    ANDROID_PROJECT_SMOKE_TEST_VERSION(JvmVendor.OPENJDK, JvmVersion.JAVA_17),
 }

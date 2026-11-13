@@ -16,28 +16,38 @@
 
 package org.gradle.api.internal.tasks
 
+import org.gradle.api.problems.Severity
 import org.gradle.api.Action
 import org.gradle.api.DefaultTask
 import org.gradle.api.internal.tasks.execution.ExecuteTaskBuildOperationType
 import org.gradle.api.tasks.CacheableTask
+import org.gradle.api.tasks.ClasspathNormalizer
+import org.gradle.api.tasks.CompileClasspathNormalizer
+import org.gradle.api.tasks.FileNormalizer
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.Nested
 import org.gradle.api.tasks.Optional
 import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import org.gradle.integtests.fixtures.BuildOperationsFixture
+import org.gradle.integtests.fixtures.modes.UnsupportedWithConfigurationCache
 import org.gradle.internal.enterprise.core.GradleEnterprisePluginAdapter
 import org.gradle.internal.enterprise.core.GradleEnterprisePluginManager
-import org.gradle.internal.reflect.problems.ValidationProblemId
 import org.gradle.internal.reflect.validation.ValidationMessageChecker
-import org.gradle.internal.reflect.validation.ValidationTestFor
-import spock.lang.Unroll
 
-@Unroll
+import static com.google.common.base.CaseFormat.UPPER_CAMEL
+import static com.google.common.base.CaseFormat.UPPER_UNDERSCORE
+
 class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec implements ValidationMessageChecker {
 
     def operations = new BuildOperationsFixture(executer, temporaryFolder)
+
+    def setup() {
+        expectReindentedValidationMessage()
+        enableProblemsApiCheck()
+    }
 
     def "task output caching key is exposed when build cache is enabled"() {
         given:
@@ -59,7 +69,7 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
     def "task output caching key is exposed when scan plugin is applied"() {
         given:
         settingsFile << """
-            services.get($GradleEnterprisePluginManager.name).registerAdapter([buildFinished: {}, shouldSaveToConfigurationCache: { false }] as $GradleEnterprisePluginAdapter.name)
+            services.get($GradleEnterprisePluginManager.name).registerAdapter([buildFinished: { a, b -> }, shouldSaveToConfigurationCache: { false }] as $GradleEnterprisePluginAdapter.name)
         """
 
         buildFile << customTaskCode('foo', 'bar')
@@ -76,18 +86,18 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         result.outputPropertyNames == ['outputFile1', 'outputFile2']
     }
 
-    def "task output caching key is not exposed by default"() {
+    def "task output caching key is exposed by default"() {
         when:
         buildFile << customTaskCode('foo', 'bar')
         succeeds('customTask')
 
         then:
-        !operations.hasOperation(SnapshotTaskInputsBuildOperationType)
+        operations.hasOperation(SnapshotTaskInputsBuildOperationType)
     }
 
     def "handles task with no outputs"() {
         when:
-        buildScript """
+        buildFile """
             task noOutputs {
                 doLast {}
             }
@@ -106,7 +116,7 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
 
     def "handles task with no inputs"() {
         when:
-        buildScript """
+        buildFile """
             task noInputs {
                 outputs.file "foo.txt"
                 doLast {}
@@ -126,7 +136,7 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
 
     def "not sent for task with no actions"() {
         when:
-        buildScript """
+        buildFile """
             task noActions {
             }
         """
@@ -136,12 +146,10 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         !operations.hasOperation(SnapshotTaskInputsBuildOperationType)
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.UNKNOWN_IMPLEMENTATION
-    )
+    @UnsupportedWithConfigurationCache(because = "Custom classloader, https://github.com/gradle/gradle/issues/11510")
     def "handles invalid implementation classloader"() {
         given:
-        buildScript """
+        buildFile """
             def classLoader = new GroovyClassLoader(this.class.classLoader)
             def clazz = classLoader.parseClass(\"\"\"${customTaskImpl()}\"\"\")
             task customTask(type: clazz){
@@ -151,19 +159,10 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         """
 
         when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            implementationOfTask(':customTask')
-            unknownClassloader('CustomTask_Decorated')
-            includeLink()
-        })
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('CustomTask_Decorated')
-            includeLink()
-        })
-        succeeds('customTask', '--build-cache')
+        fails('customTask', '--build-cache')
 
         then:
+        failureDescriptionStartsWith("Some problems were found with the configuration of task ':customTask' (type 'CustomTask').")
         def result = operations.first(SnapshotTaskInputsBuildOperationType).result
         result.hash == null
         result.classLoaderHash == null
@@ -171,14 +170,38 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         result.actionClassNames == null
         result.inputValueHashes == null
         result.outputPropertyNames == null
+
+        and:
+        verifyAll(receivedProblem(0)) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Logic:Unknown implementation'
+            definition.id.displayName == 'Unknown implementation'
+            contextualLabel == 'Additional action of task \':customTask\' was loaded with an unknown classloader (class \'CustomTask_Decorated\').'
+            details == 'Gradle cannot track the implementation for classes loaded with an unknown classloader.'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#implementation_unknown"
+            solutions == [ 'Load your class by using one of Gradle\'s built-in ways.' ]
+            additionalData.asMap == [
+                'typeName' : 'CustomTask'
+            ]
+        }
+        verifyAll(receivedProblem(1)) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Logic:Unknown implementation'
+            definition.id.displayName == 'Unknown implementation'
+            contextualLabel == 'Implementation of task \':customTask\' was loaded with an unknown classloader (class \'CustomTask_Decorated\').'
+            details == 'Gradle cannot track the implementation for classes loaded with an unknown classloader.'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#implementation_unknown"
+            solutions == [ 'Load your class by using one of Gradle\'s built-in ways.' ]
+            additionalData.asMap == [
+                'typeName' : 'CustomTask'
+            ]
+        }
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.UNKNOWN_IMPLEMENTATION
-    )
+    @UnsupportedWithConfigurationCache(because = "Custom classloader, https://github.com/gradle/gradle/issues/11510")
     def "handles invalid action classloader"() {
         given:
-        buildScript """
+        buildFile """
             ${customTaskCode('foo', 'bar')}
             def classLoader = new GroovyClassLoader(this.class.classLoader)
             def c = classLoader.parseClass '''
@@ -190,14 +213,10 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         """
 
         when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            additionalTaskAction(':customTask')
-            unknownClassloader('A')
-            includeLink()
-        })
-        succeeds('customTask', '--build-cache')
+        fails('customTask', '--build-cache')
 
         then:
+        failureDescriptionStartsWith("A problem was found with the configuration of task ':customTask' (type 'CustomTask').")
         def result = operations.first(SnapshotTaskInputsBuildOperationType).result
         result.hash == null
         result.classLoaderHash == null
@@ -205,6 +224,21 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         result.actionClassNames == null
         result.inputValueHashes == null
         result.outputPropertyNames == null
+
+        and:
+        verifyAll(receivedProblem) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Logic:Unknown implementation'
+            definition.id.displayName == 'Unknown implementation'
+            contextualLabel == 'Additional action of task \':customTask\' was loaded with an unknown classloader (class \'A\').'
+            details == 'Gradle cannot track the implementation for classes loaded with an unknown classloader.'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#implementation_unknown"
+            solutions == [ 'Load your class by using one of Gradle\'s built-in ways.' ]
+            additionalData.asMap == [
+                'typeName' : 'CustomTask',
+            ]
+        }
+
     }
 
     def "exposes file inputs, ignoring empty directories"() {
@@ -375,9 +409,10 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
             file("build.gradle") << """
                 task foo {
                     inputs.dir('src').ignoreEmptyDirectories(false).withPropertyName('src')
-                    outputs.file('output.txt')
+                    def outputFile = file('output.txt')
+                    outputs.file(outputFile)
                     doLast {
-                        file('output.txt') << 'do stuff'
+                        outputFile << 'do stuff'
                     }
                 }
             """
@@ -450,7 +485,7 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         given:
         withBuildCache()
         file('inputFile').text = 'inputFile'
-        buildScript """
+        buildFile """
             task copy(type:Copy) {
                from 'inputFile'
                into 'destDir'
@@ -475,12 +510,10 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         }
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.UNKNOWN_IMPLEMENTATION
-    )
+    @UnsupportedWithConfigurationCache(because = "Custom classloader, https://github.com/gradle/gradle/issues/11510")
     def "handles invalid nested bean classloader"() {
         given:
-        buildScript """
+        buildFile """
             ${customTaskCode('foo', 'bar')}
             def classLoader = new GroovyClassLoader(this.class.classLoader)
             def c = classLoader.parseClass '''
@@ -493,14 +526,10 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         """
 
         when:
-        expectThatExecutionOptimizationDisabledWarningIsDisplayed(executer, implementationUnknown {
-            nestedProperty('bean')
-            unknownClassloader('A')
-            includeLink()
-        })
-        succeeds('customTask', '--build-cache')
+        fails('customTask', '--build-cache')
 
         then:
+        failureDescriptionStartsWith("A problem was found with the configuration of task ':customTask' (type 'CustomTask').")
         def result = operations.first(SnapshotTaskInputsBuildOperationType).result
         result.hash == null
         result.classLoaderHash == null
@@ -508,6 +537,77 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         result.actionClassNames == null
         result.inputValueHashes == null
         result.outputPropertyNames == null
+
+        and:
+        verifyAll(receivedProblem(0)) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Logic:Unknown property implementation'
+            definition.id.displayName == 'Unknown property implementation'
+            contextualLabel == "Property 'bean' was loaded with an unknown classloader (class 'A')."
+            details == 'Gradle cannot track the implementation for classes loaded with an unknown classloader.'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#implementation_unknown"
+            solutions == [ 'Load your class by using one of Gradle\'s built-in ways.' ]
+            additionalData.asMap == [
+                'typeName' : 'CustomTask',
+                'propertyName' : 'bean'
+            ]
+        }
+    }
+
+    def "deprecate warning about trying to use custom FileNormalizer"() {
+        buildFile << """
+            interface CustomFileNormalizer extends FileNormalizer {
+            }
+
+            task customTask {
+                inputs.dir('foo')
+                    .withPropertyName('inputDir')
+                    .withNormalizer(CustomFileNormalizer)
+                outputs.file('outputDir')
+                doLast {
+                    println 'do something'
+                }
+            }
+        """
+        disableProblemsApiCheck()
+        createDir('foo')
+        expect:
+        executer.expectDocumentedDeprecationWarning("Setting normalizer of type 'CustomFileNormalizer' on property 'inputDir'. This behavior has been deprecated. This will fail with an error in Gradle 10.")
+        succeeds("customTask")
+    }
+
+    def "properly captures all attributes"() {
+        given:
+        withBuildCache()
+        buildFile << """
+            task customTask {
+                inputs.dir('foo')
+                    .withPropertyName('inputDir')
+                    .withPathSensitivity(PathSensitivity.$pathSensitivity)
+                    .ignoreEmptyDirectories($ignoreEmptyDirectories)
+                    .normalizeLineEndings($ignoreLineEndings)
+                    ${normalizer ? ".withNormalizer(${normalizer.name})" : ''}
+                outputs.file('outputDir')
+                doLast {
+                    println 'do something'
+                }
+            }
+        """
+        createDir('foo')
+
+        when:
+        succeeds("customTask")
+        then:
+        with(snapshotResults(":customTask").inputFileProperties.inputDir) {
+            attributes == [
+                directorySensitivity(ignoreEmptyDirectories, pathSensitivity, normalizer),
+                attributeFromPathSensitivity(pathSensitivity, normalizer),
+                ignoreLineEndings ? "LINE_ENDING_SENSITIVITY_NORMALIZE_LINE_ENDINGS" : "LINE_ENDING_SENSITIVITY_DEFAULT"
+            ]
+        }
+
+        where:
+        [pathSensitivity, normalizer, ignoreEmptyDirectories, ignoreLineEndings] << [PathSensitivity.values(), [null, ClasspathNormalizer, CompileClasspathNormalizer], [true, false], [true, false]].combinations()
     }
 
     private static String customTaskCode(String input1, String input2) {
@@ -560,4 +660,23 @@ class SnapshotTaskInputsOperationIntegrationTest extends AbstractIntegrationSpec
         results.first().result
     }
 
+    static String directorySensitivity(boolean ignoreEmptyDirectories, PathSensitivity pathSensitivity, Class<? extends FileNormalizer> normalizer) {
+        ignoreEmptyDirectories && !normalizer && pathSensitivity != PathSensitivity.NONE ? "DIRECTORY_SENSITIVITY_IGNORE_DIRECTORIES" : "DIRECTORY_SENSITIVITY_DEFAULT"
+    }
+
+    static String attributeFromPathSensitivity(PathSensitivity pathSensitivity, Class<? extends FileNormalizer> normalizer) {
+        if (normalizer) {
+            return "FINGERPRINTING_STRATEGY_${UPPER_CAMEL.to(UPPER_UNDERSCORE, normalizer.simpleName - 'Normalizer')}"
+        }
+        switch (pathSensitivity) {
+            case PathSensitivity.ABSOLUTE:
+                return "FINGERPRINTING_STRATEGY_ABSOLUTE_PATH"
+            case PathSensitivity.RELATIVE:
+                return "FINGERPRINTING_STRATEGY_RELATIVE_PATH"
+            case PathSensitivity.NAME_ONLY:
+                return "FINGERPRINTING_STRATEGY_NAME_ONLY"
+            case PathSensitivity.NONE:
+                return "FINGERPRINTING_STRATEGY_IGNORED_PATH"
+        }
+    }
 }

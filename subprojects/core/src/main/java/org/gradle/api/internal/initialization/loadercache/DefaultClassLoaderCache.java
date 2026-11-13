@@ -20,10 +20,8 @@ import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Joiner;
 import com.google.common.base.Objects;
 import com.google.common.collect.HashMultiset;
-import com.google.common.collect.Maps;
 import com.google.common.collect.Multiset;
 import com.google.common.collect.Sets;
-import org.gradle.internal.session.BuildSessionLifecycleListener;
 import org.gradle.internal.classloader.ClassLoaderUtils;
 import org.gradle.internal.classloader.ClasspathHasher;
 import org.gradle.internal.classloader.FilteringClassLoader;
@@ -31,10 +29,13 @@ import org.gradle.internal.classloader.HashingClassLoaderFactory;
 import org.gradle.internal.classpath.ClassPath;
 import org.gradle.internal.concurrent.Stoppable;
 import org.gradle.internal.hash.HashCode;
+import org.gradle.internal.session.BuildSessionLifecycleListener;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import javax.annotation.Nullable;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
@@ -43,9 +44,9 @@ public class DefaultClassLoaderCache implements ClassLoaderCache, Stoppable, Bui
     private static final Logger LOGGER = LoggerFactory.getLogger(DefaultClassLoaderCache.class);
 
     private final Object lock = new Object();
-    private final Map<ClassLoaderId, CachedClassLoader> byId = Maps.newHashMap();
-    private final Map<ClassLoaderSpec, CachedClassLoader> bySpec = Maps.newHashMap();
-    private final Set<ClassLoaderId> usedInThisBuild = Sets.newHashSet();
+    private final Map<ClassLoaderId, CachedClassLoader> byId = new HashMap<>();
+    private final Map<ClassLoaderSpec, CachedClassLoader> bySpec = new HashMap<>();
+    private final Set<ClassLoaderId> usedInThisBuild = new HashSet<>();
     private final ClasspathHasher classpathHasher;
     private final HashingClassLoaderFactory classLoaderFactory;
 
@@ -55,12 +56,12 @@ public class DefaultClassLoaderCache implements ClassLoaderCache, Stoppable, Bui
     }
 
     @Override
-    public ClassLoader get(ClassLoaderId id, ClassPath classPath, @Nullable ClassLoader parent, @Nullable FilteringClassLoader.Spec filterSpec) {
+    public ClassLoader get(ClassLoaderId id, ClassPath classPath, @Nullable ClassLoader parent, FilteringClassLoader.@Nullable Spec filterSpec) {
         return get(id, classPath, parent, filterSpec, null);
     }
 
     @Override
-    public ClassLoader get(ClassLoaderId id, ClassPath classPath, @Nullable ClassLoader parent, @Nullable FilteringClassLoader.Spec filterSpec, @Nullable HashCode implementationHash) {
+    public ClassLoader get(ClassLoaderId id, ClassPath classPath, @Nullable ClassLoader parent, FilteringClassLoader.@Nullable Spec filterSpec, @Nullable HashCode implementationHash) {
         return doGet(id, classPath, parent, filterSpec, implementationHash, this::createClassLoader);
     }
 
@@ -69,7 +70,7 @@ public class DefaultClassLoaderCache implements ClassLoaderCache, Stoppable, Bui
         return doGet(id, classPath, parent, null, implementationHash, spec -> factoryFunction.apply(spec.parent));
     }
 
-    private ClassLoader doGet(ClassLoaderId id, ClassPath classPath, @Nullable ClassLoader parent, @Nullable FilteringClassLoader.Spec filterSpec, @Nullable HashCode implementationHash, Function<ManagedClassLoaderSpec, ClassLoader> factoryFunction) {
+    private ClassLoader doGet(ClassLoaderId id, ClassPath classPath, @Nullable ClassLoader parent, FilteringClassLoader.@Nullable Spec filterSpec, @Nullable HashCode implementationHash, Function<ManagedClassLoaderSpec, ClassLoader> factoryFunction) {
         if (implementationHash == null) {
             implementationHash = classpathHasher.hash(classPath);
         }
@@ -251,7 +252,7 @@ public class DefaultClassLoaderCache implements ClassLoaderCache, Stoppable, Bui
 
     private void assertInternalIntegrity() {
         synchronized (lock) {
-            Map<ClassLoaderId, CachedClassLoader> orphaned = Maps.newHashMap();
+            Map<ClassLoaderId, CachedClassLoader> orphaned = new HashMap<>();
             for (Map.Entry<ClassLoaderId, CachedClassLoader> entry : byId.entrySet()) {
                 if (!bySpec.containsKey(entry.getValue().spec)) {
                     orphaned.put(entry.getKey(), entry.getValue());

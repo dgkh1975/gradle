@@ -20,15 +20,20 @@ import com.google.common.collect.Sets
 import gradlebuild.integrationtests.tasks.DistributionTest
 import gradlebuild.performance.PerformanceTestService
 import gradlebuild.performance.ScenarioBuildResultData
+import gradlebuild.performance.junit4.JUnit4Failure
+import gradlebuild.performance.junit4.JUnit4Testcase
+import gradlebuild.performance.junit4.JUnit4Testsuite
+import gradlebuild.performance.junit4.SecureUnmarshaller
 import gradlebuild.performance.reporter.PerformanceReporter
 import groovy.json.JsonOutput
 import groovy.transform.CompileStatic
 import org.apache.commons.io.FileUtils
 import org.gradle.api.GradleException
-import org.gradle.api.Task
 import org.gradle.api.file.ConfigurableFileCollection
+import org.gradle.api.file.DirectoryProperty
 import org.gradle.api.internal.tasks.testing.filter.DefaultTestFilter
 import org.gradle.api.provider.Property
+import org.gradle.api.provider.Provider
 import org.gradle.api.tasks.CacheableTask
 import org.gradle.api.tasks.Input
 import org.gradle.api.tasks.InputFiles
@@ -41,13 +46,9 @@ import org.gradle.api.tasks.PathSensitivity
 import org.gradle.api.tasks.TaskAction
 import org.gradle.api.tasks.options.Option
 import org.gradle.process.CommandLineArgumentProvider
-import org.openmbee.junit.JUnitMarshalling
-import org.openmbee.junit.model.JUnitFailure
-import org.openmbee.junit.model.JUnitTestCase
-import org.openmbee.junit.model.JUnitTestSuite
 
 import javax.annotation.Nullable
-import java.nio.charset.Charset
+import java.nio.charset.StandardCharsets
 
 /**
  * A test that checks execution time and memory consumption.
@@ -55,7 +56,6 @@ import java.nio.charset.Charset
 @CacheableTask
 @CompileStatic
 abstract class PerformanceTest extends DistributionTest {
-    public static final String TC_URL = "https://builds.gradle.org/viewLog.html?buildId="
     public static final Set<String> NON_CACHEABLE_VERSIONS = Sets.newHashSet("last", "nightly", "flakiness-detection-commit")
     private final Property<String> baselines = getProject().getObjects().property(String.class)
 
@@ -69,7 +69,6 @@ abstract class PerformanceTest extends DistributionTest {
     @OutputDirectory
     File debugArtifactsDirectory = new File(getProject().getBuildDir(), getName())
 
-    /************** properties configured by command line arguments ***************/
     @Nullable
     @Optional
     @Input
@@ -90,11 +89,15 @@ abstract class PerformanceTest extends DistributionTest {
     @Input
     String checks
 
-    @Nullable
-    @Internal
-    String channel
+    @Input
+    boolean generateDiffs = true
 
-    /************** properties configured by PerformanceTestPlugin ***************/
+    @Internal
+    abstract Property<String> getChannel()
+
+    @Internal
+    abstract Property<Boolean> getBuildOperationTrace()
+
     @Internal
     String buildId
 
@@ -116,6 +119,9 @@ abstract class PerformanceTest extends DistributionTest {
     @Input
     abstract Property<String> getReportGeneratorClass()
 
+    @Internal
+    abstract DirectoryProperty getCommitDistributionsDir()
+
     private final PerformanceReporter performanceReporter = project.objects.newInstance(PerformanceReporter)
 
     @Internal
@@ -124,8 +130,8 @@ abstract class PerformanceTest extends DistributionTest {
     PerformanceTest() {
         getJvmArgumentProviders().add(new PerformanceTestJvmArgumentsProvider())
         getOutputs().doNotCacheIf("baselines contain version 'flakiness-detection-commit', 'last' or 'nightly'", { containsSpecialVersions() })
-        getOutputs().doNotCacheIf("flakiness detection", { flakinessDetection })
-        getOutputs().upToDateWhen { !containsSpecialVersions() && !flakinessDetection }
+        getOutputs().doNotCacheIf("flakiness detection", { isFlakinessDetection().get() })
+        getOutputs().upToDateWhen { !containsSpecialVersions() && !isFlakinessDetection().get() }
 
         projectName.set(project.name)
     }
@@ -137,8 +143,8 @@ abstract class PerformanceTest extends DistributionTest {
             .any { NON_CACHEABLE_VERSIONS.contains(it) }
     }
 
-    private boolean isFlakinessDetection() {
-        return channel.startsWith("flakiness-detection")
+    private Provider<Boolean> isFlakinessDetection() {
+        return channel.map {it.startsWith("flakiness-detection") }.orElse(false)
     }
 
     @Override
@@ -166,7 +172,8 @@ abstract class PerformanceTest extends DistributionTest {
                 reportDir,
                 [resultsJson],
                 databaseParameters,
-                channel,
+                channel.get(),
+                [] as Set,
                 branchName,
                 commitId.get(),
                 classpath,
@@ -234,15 +241,19 @@ abstract class PerformanceTest extends DistributionTest {
         this.checks = checks
     }
 
-    @Option(option = "channel", description = "Channel to use when running the performance test. By default, 'commits'.")
-    void setChannel(@Nullable String channel) {
-        this.channel = channel
+    @Option(option = "generate-diffs", description = "Whether to generate differential flame graphs after profiling")
+    void setGenerateDiffs(boolean generateDiffs) {
+        this.generateDiffs = generateDiffs
     }
 
     @Option(option = "profiler", description = "Allows configuring a profiler to use. The same options as for Gradle profilers --profiler command line option are available and 'none' to disable profiling")
     @Optional
     @Input
     abstract Property<String> getProfiler()
+
+    @Option(option = "cross-version-only", description = "Only run cross version performance tests")
+    @Input
+    final Property<Boolean> crossVersionOnly = project.objects.property(Boolean.class).convention(false)
 
     @Optional
     @Input
@@ -263,42 +274,43 @@ abstract class PerformanceTest extends DistributionTest {
     @InputFiles
     abstract ConfigurableFileCollection getTestProjectFiles()
 
-    void setTestProjectGenerationTask(Task testProjectGenerationTask) {
-        getTestProjectName().set(testProjectGenerationTask.name)
-        getTestProjectFiles().setFrom(testProjectGenerationTask)
-    }
-
     void addDatabaseParameters(Map<String, String> databaseConnectionParameters) {
         this.databaseParameters.putAll(databaseConnectionParameters)
     }
 
     void generateResultsJson() {
         Collection<File> xmls = reports.junitXml.outputLocation.get().asFile.listFiles().findAll { it.path.endsWith(".xml") }
+        FileUtils.write(resultsJson, JsonOutput.toJson(parseJUnitReports(xmls)), StandardCharsets.UTF_8)
+    }
+
+
+    List<ScenarioBuildResultData> parseJUnitReports(Collection<File> xmls) {
+        SecureUnmarshaller secureUnmarshaller = new SecureUnmarshaller()
         List<ScenarioBuildResultData> resultData = xmls
-            .collect { JUnitMarshalling.unmarshalTestSuite(new FileInputStream(it)) }
-            .collect { extractResultFromTestSuite(it, getTestProjectName().get()) }
+            .collect { xml -> secureUnmarshaller.unmarshal(xml) }
+            .collect {it.collect { extractResultFromTestSuite(it, getTestProjectName().get()) } }
             .flatten() as List<ScenarioBuildResultData>
-        FileUtils.write(resultsJson, JsonOutput.toJson(resultData), Charset.defaultCharset())
+        return resultData
     }
 
-    static String collectFailures(JUnitTestCase testCase) {
-        List<JUnitFailure> failures = testCase.failures ?: []
-        return failures.collect { it.value }.join("\n")
+    static String collectFailures(JUnit4Testcase testCase) {
+        List<JUnit4Failure> failures = testCase.failure ?: []
+        return failures.collect { it.content }.join("\n")
     }
 
-    private List<ScenarioBuildResultData> extractResultFromTestSuite(JUnitTestSuite testSuite, String testProject) {
-        List<JUnitTestCase> testCases = testSuite.testCases ?: []
+    private List<ScenarioBuildResultData> extractResultFromTestSuite(JUnit4Testsuite testSuite, String testProject) {
+        def agentName = System.getenv("BUILD_AGENT_NAME") ?: null
+
+        List<JUnit4Testcase> testCases = testSuite.testcase ?: []
         return testCases.findAll { !it.skipped }.collect {
-            def agentName = System.getenv("BUILD_AGENT_NAME") ?: null
             new ScenarioBuildResultData(
                 scenarioName: it.name,
-                scenarioClass: it.className,
+                scenarioClass: it.classname,
                 testProject: testProject,
-                webUrl: TC_URL + buildId,
-                teamCityBuildId: buildId,
                 agentName: agentName,
-                status: (it.errors || it.failures) ? "FAILURE" : "SUCCESS",
-                testFailure: collectFailures(it))
+                status: (it.error || it.failure) ? "FAILURE" : "SUCCESS",
+                testFailure: collectFailures(it)
+            )
         }
     }
 
@@ -312,14 +324,19 @@ abstract class PerformanceTest extends DistributionTest {
         }
 
         private void addExecutionParameters(List<String> result) {
+            addSystemPropertyIfExist(result, "integTest.commitDistributionsDir", commitDistributionsDir.get().asFile.absolutePath)
             addSystemPropertyIfExist(result, "org.gradle.performance.scenarios", scenarios)
             addSystemPropertyIfExist(result, "org.gradle.performance.testProject", getTestProjectName().getOrNull())
             addSystemPropertyIfExist(result, "org.gradle.performance.baselines", baselines.getOrNull())
+            addSystemPropertyIfExist(result, "org.gradle.performance.crossVersionOnly", crossVersionOnly.get())
             addSystemPropertyIfExist(result, "org.gradle.performance.execution.warmups", warmups)
             addSystemPropertyIfExist(result, "org.gradle.performance.execution.runs", runs)
+            addSystemPropertyIfExist(result, "org.gradle.performance.execution.generateDiffs", generateDiffs)
             addSystemPropertyIfExist(result, "org.gradle.performance.regression.checks", checks)
-            addSystemPropertyIfExist(result, "org.gradle.performance.execution.channel", channel)
+            addSystemPropertyIfExist(result, "org.gradle.performance.execution.channel", channel.get())
             addSystemPropertyIfExist(result, "org.gradle.performance.debugArtifactsDirectory", getDebugArtifactsDirectory())
+            addSystemPropertyIfExist(result, "org.gradle.performance.db.profiling.output", new File(debugArtifactsDirectory, "db-profiling.txt").absolutePath)
+            addSystemPropertyIfExist(result, "org.gradle.performance.buildOperationTrace", buildOperationTrace.get())
             addSystemPropertyIfExist(result, "gradleBuildBranch", branchName)
 
             if (profiler.isPresent() && profiler.get() != "none") {

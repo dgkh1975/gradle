@@ -16,15 +16,13 @@
 
 package org.gradle.internal.operations
 
-import org.gradle.internal.concurrent.DefaultExecutorFactory
-import org.gradle.internal.concurrent.DefaultParallelismConfiguration
-import org.gradle.internal.progress.NoOpProgressLoggerFactory
 import org.gradle.internal.resources.DefaultResourceLockCoordinationService
-import org.gradle.internal.time.Clock
+import org.gradle.internal.resources.ResourceLockCoordinationService
 import org.gradle.internal.work.DefaultWorkerLeaseService
-import org.gradle.internal.work.WorkerLeaseRegistry
+import org.gradle.internal.work.DefaultWorkerLimits
+import org.gradle.internal.work.ResourceLockStatistics
+import org.gradle.internal.work.WorkerLeaseService
 import org.gradle.test.fixtures.concurrent.ConcurrentSpec
-import spock.lang.Unroll
 
 import java.util.concurrent.CountDownLatch
 
@@ -33,10 +31,9 @@ class MaxWorkersTest extends ConcurrentSpec {
     def "BuildOperationExecutor operation start blocks when there are no leases available, taken by BuildOperationWorkerRegistry"() {
         given:
         def maxWorkers = 1
-        def workerLeaseService = this.workerLeaseService(maxWorkers)
-        def processor = new DefaultBuildOperationExecutor(
-            Mock(BuildOperationListener), Mock(Clock), new NoOpProgressLoggerFactory(),
-            new DefaultBuildOperationQueueFactory(workerLeaseService), new DefaultExecutorFactory(), new DefaultParallelismConfiguration(true, maxWorkers), new DefaultBuildOperationIdFactory())
+        def coordinationService = new DefaultResourceLockCoordinationService()
+        def workerLeaseService = this.workerLeaseService(coordinationService, maxWorkers)
+        def processor = createProcessor(coordinationService, workerLeaseService, maxWorkers)
         def processorWorker = new SimpleWorker()
 
         when:
@@ -73,13 +70,19 @@ class MaxWorkersTest extends ConcurrentSpec {
         workerLeaseService?.stop()
     }
 
+    private createProcessor(ResourceLockCoordinationService coordinationService, WorkerLeaseService workerLeaseService, int maxWorkers) {
+        return BuildOperationExecutorSupport.builder(maxWorkers)
+            .withCoordinationService(coordinationService)
+            .withWorkerLeaseService(workerLeaseService)
+            .build()
+    }
+
     def "BuildOperationWorkerRegistry operation start blocks when there are no leases available, taken by BuildOperationExecutor"() {
         given:
         def maxWorkers = 1
-        def workerLeaseService = this.workerLeaseService(maxWorkers)
-        def processor = new DefaultBuildOperationExecutor(
-            Mock(BuildOperationListener), Mock(Clock), new NoOpProgressLoggerFactory(),
-            new DefaultBuildOperationQueueFactory(workerLeaseService), new DefaultExecutorFactory(), new DefaultParallelismConfiguration(true, maxWorkers), new DefaultBuildOperationIdFactory())
+        def coordinationService = new DefaultResourceLockCoordinationService()
+        def workerLeaseService = this.workerLeaseService(coordinationService, maxWorkers)
+        def processor = createProcessor(coordinationService, workerLeaseService, maxWorkers)
         def processorWorker = new SimpleWorker()
         def spec = this
         when:
@@ -118,10 +121,9 @@ class MaxWorkersTest extends ConcurrentSpec {
     def "BuildOperationWorkerRegistry operations nested in BuildOperationExecutor operations borrow parent lease"() {
         given:
         def maxWorkers = 1
-        def workerLeaseService = this.workerLeaseService(maxWorkers)
-        def processor = new DefaultBuildOperationExecutor(
-            Mock(BuildOperationListener), Mock(Clock), new NoOpProgressLoggerFactory(),
-            new DefaultBuildOperationQueueFactory(workerLeaseService), new DefaultExecutorFactory(), new DefaultParallelismConfiguration(true, maxWorkers), new DefaultBuildOperationIdFactory())
+        def coordinationService = new DefaultResourceLockCoordinationService()
+        def workerLeaseService = this.workerLeaseService(coordinationService, maxWorkers)
+        def processor = createProcessor(coordinationService, workerLeaseService, maxWorkers)
         def processorWorker = new SimpleWorker()
         def spec = this
         when:
@@ -155,17 +157,15 @@ class MaxWorkersTest extends ConcurrentSpec {
         workerLeaseService?.stop()
     }
 
-    @Unroll
     def "BuildOperationExecutor can fully utilize worker leases when multiple threads owning worker leases are submitting work (maxWorkers: #maxWorkers)"() {
         CountDownLatch leaseAcquiredLatch = new CountDownLatch(maxWorkers)
         CountDownLatch runningLatch = new CountDownLatch(maxWorkers)
         CountDownLatch fullyUtilizedLatch = new CountDownLatch(1)
         final Object release = new Object()
 
-        def workerLeaseService = this.workerLeaseService(maxWorkers)
-        def processor = new DefaultBuildOperationExecutor(
-            Mock(BuildOperationListener), Mock(Clock), new NoOpProgressLoggerFactory(),
-            new DefaultBuildOperationQueueFactory(workerLeaseService), new DefaultExecutorFactory(), new DefaultParallelismConfiguration(true, maxWorkers), new DefaultBuildOperationIdFactory())
+        def coordinationService = new DefaultResourceLockCoordinationService()
+        def workerLeaseService = this.workerLeaseService(coordinationService, maxWorkers)
+        def processor = createProcessor(coordinationService, workerLeaseService, maxWorkers)
         def processorWorker = new SimpleWorker()
 
         expect:
@@ -215,8 +215,10 @@ class MaxWorkersTest extends ConcurrentSpec {
         maxWorkers << [1, 2, 4]
     }
 
-    WorkerLeaseRegistry workerLeaseService(int maxWorkers) {
-        return new DefaultWorkerLeaseService(new DefaultResourceLockCoordinationService(), new DefaultParallelismConfiguration(true, maxWorkers))
+    WorkerLeaseService workerLeaseService(ResourceLockCoordinationService coordinationService, int maxWorkers) {
+        def service = new DefaultWorkerLeaseService(coordinationService, new DefaultWorkerLimits(maxWorkers), ResourceLockStatistics.NO_OP)
+        service.startProjectExecution(true)
+        return service
     }
 
     static class SimpleWorker implements BuildOperationWorker<DefaultBuildOperationQueueTest.TestBuildOperation> {

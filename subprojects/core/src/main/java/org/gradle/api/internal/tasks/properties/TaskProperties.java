@@ -17,12 +17,12 @@
 package org.gradle.api.internal.tasks.properties;
 
 import com.google.common.collect.ImmutableSortedSet;
-import org.gradle.api.NonNullApi;
 import org.gradle.api.file.FileCollection;
 import org.gradle.api.internal.TaskInternal;
 import org.gradle.api.internal.file.FileCollectionFactory;
-import org.gradle.api.internal.tasks.TaskValidationContext;
+import org.gradle.internal.properties.bean.PropertyWalker;
 import org.gradle.internal.reflect.validation.TypeValidationContext;
+import org.jspecify.annotations.NullMarked;
 
 /**
  * A view of the properties of a task.
@@ -33,7 +33,7 @@ import org.gradle.internal.reflect.validation.TypeValidationContext;
  *
  * Created by {@link DefaultTaskProperties#resolve(PropertyWalker, FileCollectionFactory, TaskInternal)}.
  */
-@NonNullApi
+@NullMarked
 public interface TaskProperties {
     /**
      * The lifecycle aware values.
@@ -53,23 +53,6 @@ public interface TaskProperties {
     ImmutableSortedSet<InputFilePropertySpec> getInputFileProperties();
 
     /**
-     * The input files.
-     */
-    FileCollection getInputFiles();
-
-    /**
-     * Whether there are source files.
-     *
-     * Source files are {@link InputFilePropertySpec}s where {@link InputFilePropertySpec#isSkipWhenEmpty()} returns true.
-     */
-    boolean hasSourceFiles();
-
-    /**
-     * The source files.
-     */
-    FileCollection getSourceFiles();
-
-    /**
      * Output file properties.
      *
      * It is guaranteed that all the {@link OutputFilePropertySpec}s have a name and that the names are unique.
@@ -77,19 +60,18 @@ public interface TaskProperties {
     ImmutableSortedSet<OutputFilePropertySpec> getOutputFileProperties();
 
     /**
-     * The output files.
+     * Service reference properties (those annotated with {@link org.gradle.api.services.ServiceReference}).
+     *
+     * It is guaranteed that all the {@link ServiceReferenceSpec}s have a name and that the names are unique.
+     *
+     * @see org.gradle.api.services.ServiceReference
      */
-    FileCollection getOutputFiles();
+    ImmutableSortedSet<ServiceReferenceSpec> getServiceReferences();
 
     /**
      * Whether output properties have been declared.
      */
     boolean hasDeclaredOutputs();
-
-    /**
-     * Whether any of the input or output properties is untracked.
-     */
-    boolean hasUntrackedProperties();
 
     /**
      * The files that represent the local state.
@@ -109,5 +91,6 @@ public interface TaskProperties {
     /**
      * Validations for the properties.
      */
-    void validate(TaskValidationContext validationContext);
+    // TODO Rename to validateProperties
+    void validate(PropertyValidationContext validationContext);
 }

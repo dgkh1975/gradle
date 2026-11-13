@@ -28,7 +28,8 @@ import org.gradle.initialization.NotifyProjectsEvaluatedBuildOperationType
 import org.gradle.initialization.NotifyProjectsLoadedBuildOperationType
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import org.gradle.integtests.fixtures.BuildOperationsFixture
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
+import org.gradle.integtests.fixtures.modes.ToBeFixedForConfigurationCache
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
 import org.gradle.internal.logging.events.StyledTextOutputEvent
 import org.gradle.internal.operations.BuildOperationType
 import org.gradle.internal.operations.trace.BuildOperationRecord
@@ -231,6 +232,10 @@ class ExecuteUserLifecycleListenerBuildOperationIntegrationTest extends Abstract
         verifyHasChildren(projectsEvaluated, rootOtherScriptAppId, 'other script', expectedGradleOps)
     }
 
+    @ToBeFixedForIsolatedProjects(
+        because = "Gradle.(beforeProject/addListener/addProjectEvaluationListener) cannot be used at project scope with Isolated Projects",
+        issue = "https://github.com/gradle/gradle/issues/38233"
+    )
     def 'beforeEvaluate listeners are attributed to the correct registrant'() {
         given:
         def addGradleListeners = { String source ->
@@ -333,6 +338,10 @@ class ExecuteUserLifecycleListenerBuildOperationIntegrationTest extends Abstract
         verifyHasNoChildren(subBeforeEvaluated, subOtherScriptAppId)
     }
 
+    @ToBeFixedForIsolatedProjects(
+        because = "Gradle.(afterProject/addListener/addProjectEvaluationListener) cannot be used at project scope with Isolated Projects",
+        issue = "https://github.com/gradle/gradle/issues/38233"
+    )
     def 'afterEvaluate listeners are attributed to the correct registrant'() {
         given:
         def addGradleListeners = { String source ->
@@ -437,6 +446,10 @@ class ExecuteUserLifecycleListenerBuildOperationIntegrationTest extends Abstract
         verifyHasChildren(subAfterEvaluated, subOtherScriptAppId, 'other script', expectedProjectOps)
     }
 
+    @ToBeFixedForIsolatedProjects(
+        because = "Gradle.afterProject cannot be used at project scope with Isolated Projects",
+        issue = "https://github.com/gradle/gradle/issues/38233"
+    )
     def 'nested afterEvaluate listeners are attributed to the correct registrant'() {
         given:
         def addGradleListeners = { String source ->
@@ -497,7 +510,10 @@ class ExecuteUserLifecycleListenerBuildOperationIntegrationTest extends Abstract
         verifyHasChildren(rootAfterEvaluated, rootOtherScriptAppId, 'other script', expectedProjectOps)
     }
 
-    @ToBeFixedForConfigurationCache(because = "build listener")
+    @ToBeFixedForIsolatedProjects(
+        because = "Gradle.addListener cannot be used at project scope with Isolated Projects",
+        issue = "https://github.com/gradle/gradle/issues/38233"
+    )
     def 'taskGraph whenReady action listeners are attributed to the correct registrant'() {
         given:
         def addGradleListeners = { String source ->
@@ -550,6 +566,7 @@ class ExecuteUserLifecycleListenerBuildOperationIntegrationTest extends Abstract
         verifyHasChildren(whenReadyEvaluated, rootOtherScriptAppId, 'other script', expectedGradleOps)
     }
 
+    @ToBeFixedForConfigurationCache(because = "build listener")
     def 'listeners that implement multiple interfaces are decorated correctly'() {
         given:
         def addGradleListeners = { String source ->
@@ -640,6 +657,7 @@ class ExecuteUserLifecycleListenerBuildOperationIntegrationTest extends Abstract
         operations.none(ExecuteListenerBuildOperationType)
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects")
     def 'listener registrations in delayed callbacks are tracked correctly'() {
         given:
         def addBeforeProjectListeners = { String source ->

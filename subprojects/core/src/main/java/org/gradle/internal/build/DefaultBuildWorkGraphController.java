@@ -17,71 +17,77 @@
 package org.gradle.internal.build;
 
 import org.gradle.api.Task;
+import org.gradle.api.artifacts.component.BuildIdentifier;
 import org.gradle.api.internal.TaskInternal;
-import org.gradle.api.internal.project.ProjectStateRegistry;
-import org.gradle.composite.internal.IncludedBuildTaskResource;
+import org.gradle.api.specs.Spec;
+import org.gradle.execution.EntryTaskSelector;
 import org.gradle.execution.plan.BuildWorkPlan;
+import org.gradle.execution.plan.Node;
+import org.gradle.execution.plan.QueryableExecutionPlan;
 import org.gradle.execution.plan.TaskNode;
 import org.gradle.execution.plan.TaskNodeFactory;
+import org.gradle.internal.UncheckedException;
+import org.gradle.internal.work.WorkerLeaseService;
 
-import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.Set;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
 public class DefaultBuildWorkGraphController implements BuildWorkGraphController {
     private final TaskNodeFactory taskNodeFactory;
-    private final ProjectStateRegistry projectStateRegistry;
     private final BuildLifecycleController controller;
-    private final Map<String, DefaultExportedTaskNode> nodesByPath = new ConcurrentHashMap<>();
+    private final BuildIdentifier buildIdentifier;
+    private final WorkerLeaseService workerLeaseService;
     private final Object lock = new Object();
-    private DefaultBuildWorkGraph current;
+    private Thread currentOwner;
+    private final Set<DefaultBuildWorkGraph> pendingGraphs = new HashSet<>();
+    private DefaultBuildWorkGraph currentlyRunning;
 
-    public DefaultBuildWorkGraphController(TaskNodeFactory taskNodeFactory, ProjectStateRegistry projectStateRegistry, BuildLifecycleController controller) {
+    public DefaultBuildWorkGraphController(TaskNodeFactory taskNodeFactory, BuildLifecycleController controller, BuildState buildState, WorkerLeaseService workerLeaseService) {
         this.taskNodeFactory = taskNodeFactory;
-        this.projectStateRegistry = projectStateRegistry;
         this.controller = controller;
+        this.buildIdentifier = buildState.getBuildIdentifier();
+        this.workerLeaseService = workerLeaseService;
     }
 
     @Override
-    public ExportedTaskNode locateTask(TaskInternal task) {
-        DefaultExportedTaskNode node = doLocate(task.getPath());
-        node.maybeBindTask(task);
-        return node;
+    public void resetState() {
+        synchronized (lock) {
+            if (currentOwner != null) {
+                throw new IllegalStateException("Cannot reset work graph state as another thread is currently using the work graph.");
+            }
+        }
+        taskNodeFactory.resetState();
     }
 
     @Override
-    public ExportedTaskNode locateTask(String taskPath) {
-        return doLocate(taskPath);
+    public TaskNode locateTaskNode(TaskInternal task) {
+        return taskNodeFactory.getOrCreateNode(task);
     }
 
     @Override
     public BuildWorkGraph newWorkGraph() {
         synchronized (lock) {
-            if (current != null) {
-                throw new IllegalStateException("This build's work graph is currently in use by another thread.");
+            while (currentOwner != null && currentOwner != Thread.currentThread()) {
+                workerLeaseService.blocking(() -> {
+                    try {
+                        lock.wait();
+                    } catch (InterruptedException e) {
+                        throw UncheckedException.throwAsUncheckedException(e);
+                    }
+                });
             }
-            current = new DefaultBuildWorkGraph();
-            return current;
+            currentOwner = Thread.currentThread();
+            DefaultBuildWorkGraph workGraph = new DefaultBuildWorkGraph();
+            pendingGraphs.add(workGraph);
+            return workGraph;
         }
     }
 
-    private DefaultExportedTaskNode doLocate(String taskPath) {
-        return nodesByPath.computeIfAbsent(taskPath, DefaultExportedTaskNode::new);
-    }
-
-    @Nullable
-    private TaskInternal findTaskNode(String taskPath) {
-        for (Task task : taskNodeFactory.getTasks()) {
-            if (task.getPath().equals(taskPath)) {
-                return (TaskInternal) task;
-            }
-        }
-        return null;
-    }
 
     private class DefaultBuildWorkGraph implements BuildWorkGraph {
         private final Thread owner;
@@ -92,40 +98,68 @@ public class DefaultBuildWorkGraphController implements BuildWorkGraphController
         }
 
         @Override
-        public boolean schedule(Collection<ExportedTaskNode> taskNodes) {
-            assertIsOwner();
-            List<Task> tasks = new ArrayList<>();
-            for (ExportedTaskNode taskNode : taskNodes) {
-                DefaultExportedTaskNode node = (DefaultExportedTaskNode) taskNode;
-                if (nodesByPath.get(node.taskPath) != taskNode) {
-                    throw new IllegalArgumentException();
-                }
-                if (node.shouldSchedule()) {
-                    // Not already in task graph
-                    tasks.add(node.getTask());
+        public void stop() {
+            if (plan != null) {
+                plan.stop();
+            }
+            synchronized (lock) {
+                assert currentOwner == Thread.currentThread();
+                pendingGraphs.remove(this);
+                if (pendingGraphs.isEmpty()) {
+                    currentOwner = null;
+                    lock.notifyAll();
                 }
             }
-            if (tasks.isEmpty()) {
+        }
+
+        @Override
+        public boolean schedule(Collection<Node> allNodes) {
+            assertIsOwner();
+            List<Node> entryNodes = new ArrayList<>();
+            for (Node node : allNodes) {
+                if (!node.isRequired()) {
+                    // Not already in task graph
+                    entryNodes.add(node);
+                }
+            }
+            if (entryNodes.isEmpty()) {
                 return false;
             }
-            projectStateRegistry.withMutableStateOfAllProjects(() -> {
+            controller.getGradle().getOwner().getProjects().withMutableStateOfAllProjects(() -> {
                 createPlan();
-                controller.populateWorkGraph(plan, taskGraph -> taskGraph.addEntryTasks(tasks));
+                controller.prepareToScheduleTasks();
+                controller.populateWorkGraph(plan, workGraph -> workGraph.addEntryNodes(entryNodes));
             });
             return true;
         }
 
         @Override
         public void populateWorkGraph(Consumer<? super BuildLifecycleController.WorkGraphBuilder> action) {
+            BuildWorkPlan ownedPlan = getOwnedPlan();
+            controller.prepareToScheduleTasks();
+            controller.populateWorkGraph(ownedPlan, action);
+        }
+
+        @Override
+        public void addFilter(Spec<Task> filter) {
+            getOwnedPlan().addFilter(filter);
+        }
+
+        @Override
+        public void addFinalization(BiConsumer<EntryTaskSelector.Context, QueryableExecutionPlan> finalization) {
+            getOwnedPlan().addFinalization(finalization);
+        }
+
+        private BuildWorkPlan getOwnedPlan() {
             assertIsOwner();
             createPlan();
-            controller.populateWorkGraph(plan, action);
+            return plan;
         }
 
         private void createPlan() {
             if (plan == null) {
-                controller.prepareToScheduleTasks();
                 plan = controller.newWorkGraph();
+                plan.onComplete(TaskNode::fireCompleted);
             }
         }
 
@@ -139,6 +173,12 @@ public class DefaultBuildWorkGraphController implements BuildWorkGraphController
 
         @Override
         public ExecutionResult<Void> runWork() {
+            synchronized (lock) {
+                if (currentlyRunning != null) {
+                    throw new IllegalStateException("Build '" + buildIdentifier + "' is currently already running work.");
+                }
+                currentlyRunning = this;
+            }
             try {
                 if (plan != null) {
                     return controller.executeTasks(plan);
@@ -147,7 +187,7 @@ public class DefaultBuildWorkGraphController implements BuildWorkGraphController
                 }
             } finally {
                 synchronized (lock) {
-                    current = null;
+                    currentlyRunning = null;
                 }
             }
         }
@@ -159,63 +199,4 @@ public class DefaultBuildWorkGraphController implements BuildWorkGraphController
         }
     }
 
-    private class DefaultExportedTaskNode implements ExportedTaskNode {
-        final String taskPath;
-        TaskNode taskNode;
-
-        DefaultExportedTaskNode(String taskPath) {
-            this.taskPath = taskPath;
-        }
-
-        void maybeBindTask(TaskInternal task) {
-            synchronized (lock) {
-                if (taskNode == null) {
-                    taskNode = taskNodeFactory.getOrCreateNode(task);
-                }
-            }
-        }
-
-        @Override
-        public TaskInternal getTask() {
-            synchronized (lock) {
-                if (taskNode == null) {
-                    TaskInternal task = findTaskNode(taskPath);
-                    if (task == null) {
-                        throw new IllegalStateException("Task '" + taskPath + "' was never scheduled for execution.");
-                    }
-                    taskNode = taskNodeFactory.getOrCreateNode(task);
-                }
-                return taskNode.getTask();
-            }
-        }
-
-        @Override
-        public IncludedBuildTaskResource.State getTaskState() {
-            synchronized (lock) {
-                if (taskNode == null) {
-                    TaskInternal task = findTaskNode(taskPath);
-                    if (task == null) {
-                        // Assume not scheduled yet
-                        return IncludedBuildTaskResource.State.Waiting;
-                    }
-                    taskNode = taskNodeFactory.getOrCreateNode(task);
-                }
-                if (taskNode.isExecuted() && taskNode.isSuccessful()) {
-                    return IncludedBuildTaskResource.State.Success;
-                } else if (taskNode.isComplete() && taskNode.isInKnownState()) {
-                    // Here "failed" means "output is not available, so do not run dependents"
-                    return IncludedBuildTaskResource.State.Failed;
-                } else {
-                    // Scheduled but not completed
-                    return IncludedBuildTaskResource.State.Waiting;
-                }
-            }
-        }
-
-        public boolean shouldSchedule() {
-            synchronized (lock) {
-                return taskNode == null || !taskNode.isRequired();
-            }
-        }
-    }
 }

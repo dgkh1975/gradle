@@ -2,8 +2,10 @@ plugins {
     id("gradlebuild.build-logic.kotlin-dsl-gradle-plugin")
 }
 
-dependencies {
-    implementation(project(":basics"))
+description = "Provides a plugin to define entry point lifecycle tasks used for development (e.g., sanityCheck)"
 
-    implementation("com.google.code.gson:gson")
+dependencies {
+    implementation("gradlebuild:basics")
+
+    implementation(buildLibs.gson)
 }

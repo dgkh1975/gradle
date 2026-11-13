@@ -17,55 +17,31 @@
 package org.gradle.api.internal.tasks.properties;
 
 import com.google.common.collect.ImmutableSortedSet;
-import com.google.common.collect.Sets;
-import org.gradle.api.InvalidUserDataException;
-import org.gradle.api.file.FileSystemLocationProperty;
+import org.gradle.api.DomainObjectCollection;
 import org.gradle.api.internal.file.FileCollectionFactory;
 import org.gradle.api.internal.file.FileCollectionInternal;
-import org.gradle.api.internal.file.FileCollectionStructureVisitor;
-import org.gradle.api.internal.file.FileTreeInternal;
-import org.gradle.api.internal.file.collections.FileSystemMirroringFileTree;
-import org.gradle.api.internal.tasks.PropertyFileCollection;
 import org.gradle.api.provider.Provider;
-import org.gradle.api.tasks.FileNormalizer;
-import org.gradle.api.tasks.PathSensitivity;
-import org.gradle.api.tasks.util.PatternSet;
-import org.gradle.internal.file.TreeType;
-import org.gradle.internal.fingerprint.AbsolutePathInputNormalizer;
-import org.gradle.internal.fingerprint.IgnoredPathInputNormalizer;
-import org.gradle.internal.fingerprint.NameOnlyInputNormalizer;
-import org.gradle.internal.fingerprint.RelativePathInputNormalizer;
-import org.gradle.util.internal.DeferredUtil;
+import org.gradle.api.tasks.TaskProvider;
+import org.gradle.internal.execution.model.InputNormalizer;
+import org.gradle.internal.fingerprint.FileNormalizer;
+import org.gradle.internal.properties.InputFilePropertyType;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
-import java.io.File;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.HashSet;
 import java.util.Iterator;
-import java.util.Map;
+import java.util.List;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Consumer;
 
 public class FileParameterUtils {
 
-    public static Class<? extends FileNormalizer> determineNormalizerForPathSensitivity(PathSensitivity pathSensitivity) {
-        switch (pathSensitivity) {
-            case NONE:
-                return IgnoredPathInputNormalizer.class;
-            case NAME_ONLY:
-                return NameOnlyInputNormalizer.class;
-            case RELATIVE:
-                return RelativePathInputNormalizer.class;
-            case ABSOLUTE:
-                return AbsolutePathInputNormalizer.class;
-            default:
-                throw new IllegalArgumentException("Unknown path sensitivity: " + pathSensitivity);
-        }
-    }
-
-    public static Class<? extends FileNormalizer> normalizerOrDefault(@Nullable Class<? extends FileNormalizer> fileNormalizer) {
+    public static FileNormalizer normalizerOrDefault(@Nullable FileNormalizer fileNormalizer) {
         // If this default is ever changed, ensure the documentation on PathSensitive is updated as well as this guide:
         // https://docs.gradle.org/current/userguide/build_cache_concepts.html#relocatability
-        return fileNormalizer == null ? AbsolutePathInputNormalizer.class : fileNormalizer;
+        return fileNormalizer == null
+            ? InputNormalizer.ABSOLUTE_PATH
+            : fileNormalizer;
     }
 
     /**
@@ -74,7 +50,7 @@ public class FileParameterUtils {
      * @throws IllegalArgumentException if there are multiple properties declared with the same name.
      */
     public static <T extends FilePropertySpec> ImmutableSortedSet<T> collectFileProperties(String displayName, Iterator<? extends T> fileProperties) {
-        Set<String> names = Sets.newHashSet();
+        Set<String> names = new HashSet<>();
         ImmutableSortedSet.Builder<T> builder = ImmutableSortedSet.naturalOrder();
         while (fileProperties.hasNext()) {
             T propertySpec = fileProperties.next();
@@ -100,93 +76,39 @@ public class FileParameterUtils {
     }
 
     /**
-     * Resolves the given output file property to individual property specs.
+     * Collects providers nested in collections and object arrays.
      *
-     * Especially, values of type {@link Map} are resolved.
+     * Root providers are handled by the caller's top-level presence check, and domain object collections and
+     * task providers are skipped. The result preserves the encounter order, and collecting does not query
+     * any provider or evaluate any deferred value.
      */
-    public static void resolveOutputFilePropertySpecs(
-        String ownerDisplayName,
-        String propertyName,
-        PropertyValue value,
-        OutputFilePropertyType filePropertyType,
-        ContentTracking contentTracking,
-        FileCollectionFactory fileCollectionFactory,
-        boolean locationOnly,
-        Consumer<OutputFilePropertySpec> consumer
-    ) {
-        Object unpackedValue = value.getUnprocessedValue();
-        unpackedValue = DeferredUtil.unpackNestableDeferred(unpackedValue);
-        if (locationOnly && unpackedValue instanceof FileSystemLocationProperty) {
-            unpackedValue = ((FileSystemLocationProperty<?>) unpackedValue).getLocationOnly();
-        }
-        if (unpackedValue instanceof Provider) {
-            unpackedValue = ((Provider<?>) unpackedValue).getOrNull();
-        }
-        if (unpackedValue == null) {
+    public static List<Provider<?>> findNestedProviders(@Nullable Object value) {
+        List<Provider<?>> providers = new ArrayList<>();
+        collectNestedProviders(value, false, providers);
+        return providers;
+    }
+
+    private static void collectNestedProviders(@Nullable Object value, boolean nested, List<Provider<?>> providers) {
+        if (value instanceof DomainObjectCollection) {
+            // DomainObjectCollection is live and can realize or mutate elements when iterated.
             return;
         }
-        // From here on, we already unpacked providers, so we can fail if any of the file collections contains a provider which is not present.
-        if (filePropertyType == OutputFilePropertyType.DIRECTORIES || filePropertyType == OutputFilePropertyType.FILES) {
-            resolveCompositeOutputFilePropertySpecs(ownerDisplayName, propertyName, unpackedValue, filePropertyType.getOutputType(), contentTracking, fileCollectionFactory, consumer);
-        } else {
-            FileCollectionInternal outputFiles = fileCollectionFactory.resolving(unpackedValue);
-            DefaultCacheableOutputFilePropertySpec filePropertySpec = new DefaultCacheableOutputFilePropertySpec(propertyName, null, outputFiles, filePropertyType.getOutputType(), contentTracking);
-            consumer.accept(filePropertySpec);
+        if (value instanceof TaskProvider) {
+            // TaskProvider is always present and can only be serialized as part of a file collection.
+            return;
         }
-    }
-
-    private static void resolveCompositeOutputFilePropertySpecs(final String ownerDisplayName, final String propertyName, Object unpackedValue, final TreeType outputType, ContentTracking contentTracking, FileCollectionFactory fileCollectionFactory, Consumer<OutputFilePropertySpec> consumer) {
-        if (unpackedValue instanceof Map) {
-            for (Map.Entry<?, ?> entry : ((Map<?, ?>) unpackedValue).entrySet()) {
-                Object key = entry.getKey();
-                if (key == null) {
-                    throw new IllegalArgumentException(String.format("Mapped output property '%s' has null key", propertyName));
-                }
-                String id = key.toString();
-                FileCollectionInternal outputFiles = fileCollectionFactory.resolving(entry.getValue());
-                consumer.accept(new DefaultCacheableOutputFilePropertySpec(propertyName, "." + id, outputFiles, outputType, contentTracking));
+        if (value instanceof Provider) {
+            if (nested) {
+                providers.add((Provider<?>) value);
             }
-        } else {
-            FileCollectionInternal outputFileCollection = fileCollectionFactory.resolving(unpackedValue);
-            AtomicInteger index = new AtomicInteger(0);
-            outputFileCollection.visitStructure(new FileCollectionStructureVisitor() {
-                @Override
-                public void visitCollection(FileCollectionInternal.Source source, Iterable<File> contents) {
-                    for (File content : contents) {
-                        FileCollectionInternal outputFiles = fileCollectionFactory.fixed(content);
-                        consumer.accept(new DefaultCacheableOutputFilePropertySpec(propertyName, "$" + index.incrementAndGet(), outputFiles, outputType, contentTracking));
-                    }
-                }
-
-                @Override
-                public void visitGenericFileTree(FileTreeInternal fileTree, FileSystemMirroringFileTree sourceTree) {
-                    failOnInvalidOutputType(fileTree);
-                }
-
-                @Override
-                public void visitFileTreeBackedByFile(File file, FileTreeInternal fileTree, FileSystemMirroringFileTree sourceTree) {
-                    failOnInvalidOutputType(fileTree);
-                }
-
-                @Override
-                public void visitFileTree(File root, PatternSet patterns, FileTreeInternal fileTree) {
-                    // We could support an unfiltered DirectoryFileTree here as a cacheable root,
-                    // but because @OutputDirectory also doesn't support it we choose not to.
-                    consumer.accept(new DirectoryTreeOutputFilePropertySpec(
-                        propertyName + "$" + index.incrementAndGet(),
-                        contentTracking,
-                        new PropertyFileCollection(ownerDisplayName, propertyName, "output", fileTree),
-                        root
-                    ));
-                }
-            });
+        } else if (value instanceof Collection) {
+            for (Object element : (Collection<?>) value) {
+                collectNestedProviders(element, true, providers);
+            }
+        } else if (value instanceof Object[]) {
+            for (Object element : (Object[]) value) {
+                collectNestedProviders(element, true, providers);
+            }
         }
-    }
-
-    private static void failOnInvalidOutputType(FileTreeInternal fileTree) {
-        throw new InvalidUserDataException(String.format(
-            "Only files and directories can be registered as outputs (was: %s)",
-            fileTree
-        ));
     }
 }

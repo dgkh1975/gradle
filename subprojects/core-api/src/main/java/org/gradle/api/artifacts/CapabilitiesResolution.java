@@ -17,6 +17,7 @@ package org.gradle.api.artifacts;
 
 import org.gradle.api.Action;
 import org.gradle.api.capabilities.Capability;
+import org.gradle.api.provider.Provider;
 import org.gradle.internal.HasInternalProtocol;
 
 /**
@@ -35,6 +36,7 @@ public interface CapabilitiesResolution {
      * Configures the resolution strategy of capability conflicts for all capabilities.
      *
      * @param action the configuration action
+     * @since 5.6
      */
     void all(Action<? super CapabilityResolutionDetails> action);
 
@@ -44,6 +46,7 @@ public interface CapabilitiesResolution {
      * @param capability a capability to configure
      *
      * @param action the configuration action
+     * @since 5.6
      */
     void withCapability(Capability capability, Action<? super CapabilityResolutionDetails> action);
 
@@ -54,15 +57,17 @@ public interface CapabilitiesResolution {
      * @param name the name of the capability to configure
      *
      * @param action the configuration action
+     * @since 5.6
      */
     void withCapability(String group, String name, Action<? super CapabilityResolutionDetails> action);
 
     /**
      * Configures the resolution strategy of a specific capability.
      *
-     * @param notation the notation of the capability to configure
+     * @param notation the {@linkplain ConfigurationPublications#capability(Object) notation} of the capability to configure, {@linkplain Provider Providers} of any notation are also accepted
      *
      * @param action the configuration action
+     * @since 5.6
      */
     void withCapability(Object notation, Action<? super CapabilityResolutionDetails> action);
 }

@@ -14,46 +14,57 @@
  * limitations under the License.
  */
 
-import gradlebuild.basics.accessors.kotlin
+import gradlebuild.basics.accessors.kotlinMainSourceSet
+import gradlebuild.basics.kotlindsl.configureKotlinCompilerForGradleBuild
+import gradlebuild.basics.testing.TestType
+import gradlebuild.integrationtests.configureTestSourceSetInIde
 import org.gradle.api.internal.initialization.DefaultClassLoaderScope
 import org.jetbrains.kotlin.gradle.tasks.KotlinCompile
 
 
 plugins {
     kotlin("jvm")
-    id("gradlebuild.java-library")
-    id("gradlebuild.ktlint")
+    id("gradlebuild.jvm-library")
+    id("gradlebuild.detekt")
+    id("gradlebuild.private-javadoc")
 }
 
 configurations.transitiveSourcesElements {
-    val main = sourceSets.main.get()
-    main.kotlin.srcDirs.forEach {
+    (kotlinMainSourceSet.srcDirs + sourceSets.main.get().resources.srcDirs).forEach {
         outgoing.artifact(it)
+    }
+}
+
+configurations.matching { it.name == "kotlinBouncyCastleConfiguration" }.configureEach {
+    val bouncycastleVersion = versionCatalogs.named("libs").findVersion("bouncycastle").get().requiredVersion
+    resolutionStrategy.eachDependency {
+        if (requested.group == "org.bouncycastle") {
+            useVersion(bouncycastleVersion)
+            because("Align with the Bouncy Castle version used by the distribution")
+        }
+    }
+}
+
+kotlin {
+    target.compilations.named("testFixtures") {
+        associateWith(target.compilations["main"])
+    }
+    target.compilations.named("test") {
+        associateWith(target.compilations["main"])
+        associateWith(target.compilations["testFixtures"])
+    }
+    target.compilations.named("integTest") {
+        associateWith(target.compilations["main"])
+        associateWith(target.compilations["testFixtures"])
     }
 }
 
 tasks {
     withType<KotlinCompile>().configureEach {
         configureKotlinCompilerForGradleBuild()
-        if (name == "compileTestKotlin") {
-            // Make sure the classes dir is used for test compilation (required by tests accessing internal methods) - https://github.com/gradle/gradle/issues/11501
-            classpath = sourceSets.main.get().output.classesDirs + classpath - files(tasks.jar)
-        }
-    }
-
-    codeQuality {
-        dependsOn(ktlintCheck)
-    }
-
-    runKtlintCheckOverKotlinScripts {
-        // Only check the build files, not all *.kts files in the project
-        setIncludes(listOf("*.gradle.kts"))
     }
 
     withType<Test>().configureEach {
-
-        shouldRunAfter(ktlintCheck)
-
         // enables stricter ClassLoaderScope behaviour
         systemProperty(
             DefaultClassLoaderScope.STRICT_MODE_PROPERTY,
@@ -62,18 +73,4 @@ tasks {
     }
 }
 
-fun KotlinCompile.configureKotlinCompilerForGradleBuild() {
-    kotlinOptions {
-        incremental = true
-        allWarningsAsErrors = true
-        apiVersion = "1.4"
-        languageVersion = "1.4"
-        freeCompilerArgs += listOf(
-            "-Xjsr305=strict",
-            "-java-parameters",
-            "-Xskip-runtime-version-check",
-            "-Xskip-metadata-version-check"
-        )
-        jvmTarget = "1.8"
-    }
-}
+configureTestSourceSetInIde(sourceSets.getByName("${TestType.INTEGRATION.prefix}Test"))

@@ -16,8 +16,10 @@
 
 package org.gradle.api.tasks
 
+import org.gradle.integtests.fixtures.modes.UnsupportedWithIsolatedProjects
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 import spock.lang.Issue
-import spock.lang.Unroll
 
 class DeferredTaskConfigurationIntegrationTest extends AbstractDeferredTaskDefinitionIntegrationTest {
     def "build logic can configure each task only when required"() {
@@ -218,8 +220,12 @@ class DeferredTaskConfigurationIntegrationTest extends AbstractDeferredTaskDefin
         succeeds 'assertActionExecutionOrder'
     }
 
-    @Unroll
+    @UnsupportedWithIsolatedProjects(
+        because = "These methods cannot be used at project scope with Isolated Projects",
+        iterationMatchers = [".*Gradle#beforeProject.*", ".*Gradle#afterProject.*"]
+    )
     def "can execute #description during task creation action execution"() {
+        createDirs("nested")
         settingsFile << "include 'nested'"
         buildFile << """
             tasks.create("foo") {
@@ -234,8 +240,12 @@ class DeferredTaskConfigurationIntegrationTest extends AbstractDeferredTaskDefin
         [description, code] << INVALID_CALL_FROM_LAZY_CONFIGURATION
     }
 
-    @Unroll
+    @UnsupportedWithIsolatedProjects(
+        because = "These methods cannot be used at project scope with Isolated Projects",
+        iterationMatchers = [".*Gradle#beforeProject.*", ".*Gradle#afterProject.*"]
+    )
     def "can execute #description during task configuration action execution"() {
+        createDirs("nested")
         settingsFile << "include 'nested'"
         buildFile << """
             tasks.create("foo")
@@ -251,8 +261,12 @@ class DeferredTaskConfigurationIntegrationTest extends AbstractDeferredTaskDefin
         [description, code] << INVALID_CALL_FROM_LAZY_CONFIGURATION
     }
 
-    @Unroll
+    @Requires(
+        value = TestExecutionPreconditions.NotIsolatedProjects,
+        reason = "Exercises IP incompatible behavior"
+    )
     def "can execute #description on another project during task creation action execution"() {
+        createDirs("nested", "other")
         settingsFile << "include 'nested', 'other'"
         buildFile << """
             project(":other") {
@@ -369,11 +383,15 @@ class DeferredTaskConfigurationIntegrationTest extends AbstractDeferredTaskDefin
         """
         expect:
         succeeds("foo")
-        result.assertTasksExecuted(":notByRule", ":bar", ":baz", ":foo")
+        result.assertTasksScheduled(":notByRule", ":bar", ":baz", ":foo")
     }
 
-    @Unroll
+    @Requires(
+        value = TestExecutionPreconditions.NotIsolatedProjects,
+        reason = "Exercises IP incompatible behavior"
+    )
     def "can execute #description on another project during task configuration action execution"() {
+        createDirs("nested", "other")
         settingsFile << "include 'nested', 'other'"
         buildFile << """
             project(":other") {
@@ -391,7 +409,10 @@ class DeferredTaskConfigurationIntegrationTest extends AbstractDeferredTaskDefin
         [description, code] << INVALID_CALL_FROM_LAZY_CONFIGURATION
     }
 
-    @Unroll
+    @UnsupportedWithIsolatedProjects(
+        because = "These methods cannot be used at project scope with Isolated Projects",
+        iterationMatchers = [".*Gradle#beforeProject.*", ".*Gradle#afterProject.*"]
+    )
     def "can execute #description during eager configuration action with registered task"() {
         buildFile << """
             tasks.withType(SomeTask) {
@@ -408,7 +429,12 @@ class DeferredTaskConfigurationIntegrationTest extends AbstractDeferredTaskDefin
     }
 
     @Issue("https://github.com/gradle/gradle/issues/6319")
+    @Requires(
+        value = TestExecutionPreconditions.NotIsolatedProjects,
+        reason = "getTasksByName is not IP compatible"
+    )
     def "can use getTasksByName from a lazy configuration action"() {
+        createDirs("sub")
         settingsFile << """
             include "sub"
         """

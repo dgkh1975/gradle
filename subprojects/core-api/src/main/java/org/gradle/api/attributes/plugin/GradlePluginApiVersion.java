@@ -16,7 +16,6 @@
 
 package org.gradle.api.attributes.plugin;
 
-import org.gradle.api.Incubating;
 import org.gradle.api.Named;
 import org.gradle.api.attributes.Attribute;
 
@@ -25,11 +24,11 @@ import org.gradle.api.attributes.Attribute;
  *
  * @since 7.0
  */
-@Incubating
 public interface GradlePluginApiVersion extends Named {
 
     /**
      * Minimal Gradle version required. See {@link org.gradle.util.GradleVersion} for supported values.
+     * @since 7.0
      */
     Attribute<GradlePluginApiVersion> GRADLE_PLUGIN_API_VERSION_ATTRIBUTE = Attribute.of("org.gradle.plugin.api-version", GradlePluginApiVersion.class);
 }

@@ -16,21 +16,29 @@
 package org.gradle.api.artifacts;
 
 import groovy.lang.Closure;
+import groovy.lang.DelegatesTo;
 import org.gradle.api.Action;
 import org.gradle.api.artifacts.result.ResolutionResult;
 import org.gradle.api.file.FileCollection;
 import org.gradle.internal.HasInternalProtocol;
 
 /**
- * A set of {@link Dependency} objects which can be resolved to a set of files. There are various methods on this type that you can use to get the result in different forms:
+ * The primary view of the results of resolving a {@link Configuration}. Results can be obtained in several forms, each catering to different use cases:
  *
  * <ul>
  *     <li>{@link #getFiles()} returns a {@link FileCollection} that provides the result as a set of {@link java.io.File} instances.</li>
- *     <li>{@link #getResolutionResult()} returns a {@link ResolutionResult} that provides information about the dependency graph.</li>
+ *     <li>{@link #getResolutionResult()} returns a {@link ResolutionResult} that provides information about the dependency graph without downloading artifacts.</li>
  *     <li>{@link #getArtifacts()} returns an {@link ArtifactCollection} that provides the files with additional metadata.</li>
+ *     <li>
+ *         {@link #artifactView(Action)} provides several APIs, which can perform lenient artifact resolution,
+ *         trigger artifact transforms, or filter artifacts. Furthermore, artifact views can be used to
+ *         perform variant re-selection, allowing sources and javadoc artifacts to be selected from a graph,
+ *         among other things.
+ *     </li>
  * </ul>
  *
  * <p>The dependencies are resolved once only, when the result is first requested. The result is reused and returned for subsequent calls. Once resolved, any mutation to the dependencies will result in an error.</p>
+ * @since 1.0
  */
 @HasInternalProtocol
 public interface ResolvableDependencies extends ArtifactView {
@@ -38,6 +46,7 @@ public interface ResolvableDependencies extends ArtifactView {
      * Returns the name of this set.
      *
      * @return The name. Never null.
+     * @since 1.0
      */
     String getName();
 
@@ -45,6 +54,7 @@ public interface ResolvableDependencies extends ArtifactView {
      * Returns the path of this set. This is a unique identifier for this set.
      *
      * @return The path. Never null.
+     * @since 1.0
      */
     String getPath();
 
@@ -62,6 +72,7 @@ public interface ResolvableDependencies extends ArtifactView {
      * Returns the set of dependencies which will be resolved.
      *
      * @return the dependencies. Never null.
+     * @since 1.0
      */
     DependencySet getDependencies();
 
@@ -78,6 +89,7 @@ public interface ResolvableDependencies extends ArtifactView {
      * Adds an action to be executed before the dependencies in this set are resolved.
      *
      * @param action The action to execute.
+     * @since 1.0
      */
     void beforeResolve(Action<? super ResolvableDependencies> action);
 
@@ -85,13 +97,15 @@ public interface ResolvableDependencies extends ArtifactView {
      * Adds an action to be executed before the dependencies in this set are resolved.
      *
      * @param action The action to execute.
+     * @since 1.0
      */
-    void beforeResolve(Closure action);
+    void beforeResolve(@DelegatesTo(ResolvableDependencies.class) Closure action);
 
     /**
      * Adds an action to be executed after the dependencies of this set have been resolved.
      *
      * @param action The action to execute.
+     * @since 1.0
      */
     void afterResolve(Action<? super ResolvableDependencies> action);
 
@@ -99,11 +113,16 @@ public interface ResolvableDependencies extends ArtifactView {
      * Adds an action to be executed after the dependencies of this set have been resolved.
      *
      * @param action The action to execute.
+     * @since 1.0
      */
-    void afterResolve(Closure action);
+    void afterResolve(@DelegatesTo(ResolvableDependencies.class) Closure action);
 
     /**
-     * Returns the resolved dependency graph, performing the resolution if required. This will resolve the dependency graph but will not resolve or download the files.
+     * Returns the resolved dependency graph, performing the resolution lazily.
+     *
+     * <p>The lazy aspect depends on what is done with the returned {@code ResolutionResult}.</p>
+     *
+     * This will resolve the dependency graph but will not resolve or download the artifacts.
      *
      * <p>You should note that when resolution fails, the exceptions are included in the {@link ResolutionResult} returned from this method. This method will not throw these exceptions.</p>
      *
@@ -125,7 +144,7 @@ public interface ResolvableDependencies extends ArtifactView {
      * Returns a builder that can be used to define and access a filtered view of the resolved artifacts.
      * @return A view over the artifacts resolved for this set of dependencies.
      *
-     * @since 3.4
+     * @since 4.0
      */
     ArtifactView artifactView(Action<? super ArtifactView.ViewConfiguration> configAction);
 }

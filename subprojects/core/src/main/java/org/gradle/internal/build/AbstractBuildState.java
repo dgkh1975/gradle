@@ -16,49 +16,100 @@
 
 package org.gradle.internal.build;
 
+import org.gradle.api.artifacts.component.BuildIdentifier;
 import org.gradle.api.internal.BuildDefinition;
+import org.gradle.api.internal.artifacts.DefaultBuildIdentifier;
+import org.gradle.api.internal.GradleInternal;
 import org.gradle.api.internal.project.ProjectStateRegistry;
+import org.gradle.caching.internal.controller.impl.LifecycleAwareBuildCacheController;
 import org.gradle.initialization.IncludedBuildSpec;
-import org.gradle.internal.Describables;
-import org.gradle.internal.DisplayName;
-import org.gradle.internal.buildtree.BuildTreeState;
+import org.gradle.initialization.layout.BuildLayout;
+import org.gradle.internal.buildtree.BuildTreeServices;
 import org.gradle.internal.lazy.Lazy;
+import org.gradle.internal.service.ManagedServiceRegistry;
+import org.gradle.internal.service.ServiceRegistryBuilder;
 import org.gradle.internal.service.scopes.BuildScopeServices;
+import org.gradle.internal.service.scopes.Scope;
+import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
+import java.io.Closeable;
+import java.io.File;
+import java.util.function.Function;
 
-public abstract class AbstractBuildState implements BuildState {
-    private final BuildScopeServices buildServices;
+public abstract class AbstractBuildState implements BuildState, Closeable {
+
+    private final BuildIdentity buildIdentity;
+    private final BuildIdentifier buildIdentifier;
+    private final @Nullable BuildState parent;
+    private final ManagedServiceRegistry buildServices;
     private final Lazy<BuildLifecycleController> buildLifecycleController;
     private final Lazy<ProjectStateRegistry> projectStateRegistry;
     private final Lazy<BuildWorkGraphController> workGraphController;
 
-    public AbstractBuildState(BuildTreeState buildTree, BuildDefinition buildDefinition, @Nullable BuildState parent) {
-        // Create the controllers using the services of the nested tree
-        BuildModelControllerServices buildModelControllerServices = buildTree.getServices().get(BuildModelControllerServices.class);
-        BuildModelControllerServices.Supplier supplier = buildModelControllerServices.servicesForBuild(buildDefinition, this, parent);
-        buildServices = prepareServices(buildTree, buildDefinition, supplier);
+    @SuppressWarnings("this-escape")
+    public AbstractBuildState(BuildTreeServices buildTreeServices, BuildDefinition buildDefinition, Path identityPath, @Nullable BuildState parent) {
+        this.buildIdentity = new BuildIdentity(identityPath);
+        this.buildIdentifier = new DefaultBuildIdentifier(identityPath);
+        this.parent = parent;
+
+        buildServices = ServiceRegistryBuilder.builder()
+            .displayName("Build-scoped services")
+            .scopeStrictly(Scope.Build.class)
+            .parent(buildTreeServices.getServices())
+            .provider(new BuildScopeServices(buildDefinition, this))
+            .build();
+
         buildLifecycleController = Lazy.locking().of(() -> buildServices.get(BuildLifecycleController.class));
         projectStateRegistry = Lazy.locking().of(() -> buildServices.get(ProjectStateRegistry.class));
         workGraphController = Lazy.locking().of(() -> buildServices.get(BuildWorkGraphController.class));
     }
 
-    protected BuildScopeServices prepareServices(BuildTreeState buildTree, BuildDefinition buildDefinition, BuildModelControllerServices.Supplier supplier) {
-        return new BuildScopeServices(buildTree.getServices(), supplier);
+    @Override
+    public @Nullable BuildState getParent() {
+        return parent;
     }
 
-    protected BuildScopeServices getBuildServices() {
+    protected ManagedServiceRegistry getBuildServices() {
         return buildServices;
     }
 
     @Override
-    public DisplayName getDisplayName() {
-        return Describables.of(getBuildIdentifier());
+    public void close() {
+        buildServices.close();
+    }
+
+    @Override
+    public BuildIdentity getBuildIdentity() {
+        return buildIdentity;
+    }
+
+    @Override
+    public BuildIdentifier getBuildIdentifier() {
+        return buildIdentifier;
     }
 
     @Override
     public String toString() {
         return getDisplayName().getDisplayName();
+    }
+
+    @Override
+    public void resetModel() {
+        projectStateRegistry.get().discardProjectsFor(this);
+        workGraphController.get().resetState();
+        buildLifecycleController.get().resetModel();
+        buildLifecycleController.get().getGradle().getServices().get(LifecycleAwareBuildCacheController.class).resetState();
+    }
+
+    @Override
+    public ExecutionResult<Void> beforeModelReset() {
+        return getBuildController().beforeModelReset();
+    }
+
+    @Override
+    public ExecutionResult<Void> beforeModelDiscarded(boolean failed) {
+        return getBuildController().beforeModelDiscarded(failed);
     }
 
     @Override
@@ -77,7 +128,7 @@ public abstract class AbstractBuildState implements BuildState {
 
     @Override
     public BuildProjectRegistry getProjects() {
-        return getProjectStateRegistry().projectsFor(getBuildIdentifier());
+        return getProjectStateRegistry().projectsFor(getBuildIdentity());
     }
 
     protected BuildLifecycleController getBuildController() {
@@ -86,16 +137,43 @@ public abstract class AbstractBuildState implements BuildState {
 
     @Override
     public void ensureProjectsLoaded() {
-        getBuildController().getLoadedSettings();
+        getBuildController().loadSettings();
+    }
+
+    @Override
+    public boolean isProjectsLoaded() {
+        return getProjectStateRegistry().findProjectsFor(getBuildIdentity()) != null;
+    }
+
+    @Override
+    public boolean isProjectsCreated() {
+        BuildProjectRegistry projectsForThisBuild = getProjectStateRegistry().findProjectsFor(getBuildIdentity());
+        return projectsForThisBuild != null && projectsForThisBuild.getRootProject().isCreated();
     }
 
     @Override
     public void ensureProjectsConfigured() {
-        getBuildController().getConfiguredBuild();
+        getBuildController().configureProjects();
+    }
+
+    @Override
+    public File getBuildRootDir() {
+        return getBuildServices().get(BuildLayout.class).getRootDirectory();
+    }
+
+    @Override
+    public GradleInternal getMutableModel() {
+        return getBuildController().getGradle();
     }
 
     @Override
     public BuildWorkGraphController getWorkGraph() {
         return workGraphController.get();
     }
+
+    @Override
+    public <T> T withToolingModels(boolean inResilientContext, Function<? super BuildToolingModelController, T> action) {
+        return getBuildController().withToolingModels(inResilientContext, action);
+    }
+
 }

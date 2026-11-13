@@ -17,40 +17,39 @@
 package org.gradle.api.internal.tasks.properties;
 
 import com.google.common.collect.ImmutableSortedSet;
-import org.gradle.api.NonNullApi;
 import org.gradle.api.file.FileCollection;
 import org.gradle.api.internal.TaskInternal;
-import org.gradle.api.internal.file.CompositeFileCollection;
 import org.gradle.api.internal.file.FileCollectionFactory;
-import org.gradle.api.internal.file.FileCollectionInternal;
-import org.gradle.api.internal.tasks.StaticValue;
+import org.gradle.api.internal.tasks.TaskDependencyContainer;
 import org.gradle.api.internal.tasks.TaskPropertyUtils;
-import org.gradle.api.internal.tasks.TaskValidationContext;
-import org.gradle.api.tasks.FileNormalizer;
+import org.gradle.api.services.BuildService;
 import org.gradle.api.tasks.TaskExecutionException;
 import org.gradle.internal.fingerprint.DirectorySensitivity;
+import org.gradle.internal.fingerprint.FileNormalizer;
 import org.gradle.internal.fingerprint.LineEndingSensitivity;
+import org.gradle.internal.properties.InputBehavior;
+import org.gradle.internal.properties.InputFilePropertyType;
+import org.gradle.internal.properties.PropertyValue;
+import org.gradle.internal.properties.PropertyVisitor;
+import org.gradle.internal.properties.bean.PropertyWalker;
 import org.gradle.internal.reflect.validation.ReplayingTypeValidationContext;
 import org.gradle.internal.reflect.validation.TypeValidationContext;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Consumer;
-import java.util.stream.Stream;
+import java.util.function.Function;
 
-@NonNullApi
+@NullMarked
 public class DefaultTaskProperties implements TaskProperties {
 
     private final ImmutableSortedSet<InputPropertySpec> inputProperties;
     private final ImmutableSortedSet<InputFilePropertySpec> inputFileProperties;
     private final ImmutableSortedSet<OutputFilePropertySpec> outputFileProperties;
-    private final FileCollection inputFiles;
-    private final boolean hasSourceFiles;
-    private final FileCollection sourceFiles;
+    private final ImmutableSortedSet<ServiceReferenceSpec> serviceReferences;
     private final boolean hasDeclaredOutputs;
     private final ReplayingTypeValidationContext validationProblems;
-    private final FileCollection outputFiles;
     private final FileCollection localStateFiles;
     private final FileCollection destroyableFiles;
     private final List<ValidatingProperty> validatingProperties;
@@ -59,6 +58,7 @@ public class DefaultTaskProperties implements TaskProperties {
         String beanName = task.toString();
         GetInputPropertiesVisitor inputPropertiesVisitor = new GetInputPropertiesVisitor();
         GetInputFilesVisitor inputFilesVisitor = new GetInputFilesVisitor(beanName, fileCollectionFactory);
+        GetServiceReferencesVisitor serviceReferencesVisitor = new GetServiceReferencesVisitor();
         ValidationVisitor validationVisitor = new ValidationVisitor();
         OutputFilesCollector outputFilesCollector = new OutputFilesCollector();
         OutputUnpacker outputUnpacker = new OutputUnpacker(
@@ -78,17 +78,18 @@ public class DefaultTaskProperties implements TaskProperties {
                 outputUnpacker,
                 validationVisitor,
                 destroyablesVisitor,
-                localStateVisitor
+                localStateVisitor,
+                serviceReferencesVisitor
             ));
         } catch (Exception e) {
             throw new TaskExecutionException(task, e);
         }
 
         return new DefaultTaskProperties(
-            task.toString(),
             inputPropertiesVisitor.getProperties(),
             inputFilesVisitor.getFileProperties(),
             outputFilesCollector.getFileProperties(),
+            serviceReferencesVisitor.getServiceReferences(),
             outputUnpacker.hasDeclaredOutputs(),
             localStateVisitor.getFiles(),
             destroyablesVisitor.getFiles(),
@@ -97,10 +98,10 @@ public class DefaultTaskProperties implements TaskProperties {
     }
 
     private DefaultTaskProperties(
-        String name,
         ImmutableSortedSet<InputPropertySpec> inputProperties,
         ImmutableSortedSet<InputFilePropertySpec> inputFileProperties,
         ImmutableSortedSet<OutputFilePropertySpec> outputFileProperties,
+        ImmutableSortedSet<ServiceReferenceSpec> serviceReferences,
         boolean hasDeclaredOutputs,
         FileCollection localStateFiles,
         FileCollection destroyableFiles,
@@ -113,51 +114,8 @@ public class DefaultTaskProperties implements TaskProperties {
         this.inputProperties = inputProperties;
         this.inputFileProperties = inputFileProperties;
         this.outputFileProperties = outputFileProperties;
+        this.serviceReferences = serviceReferences;
         this.hasDeclaredOutputs = hasDeclaredOutputs;
-
-        this.inputFiles = new CompositeFileCollection() {
-            @Override
-            public String getDisplayName() {
-                return name + " input files";
-            }
-
-            @Override
-            protected void visitChildren(Consumer<FileCollectionInternal> visitor) {
-                for (InputFilePropertySpec filePropertySpec : inputFileProperties) {
-                    visitor.accept(filePropertySpec.getPropertyFiles());
-                }
-            }
-        };
-        this.sourceFiles = new CompositeFileCollection() {
-            @Override
-            public String getDisplayName() {
-                return name + " source files";
-            }
-
-            @Override
-            protected void visitChildren(Consumer<FileCollectionInternal> visitor) {
-                for (InputFilePropertySpec filePropertySpec : inputFileProperties) {
-                    if (filePropertySpec.isSkipWhenEmpty()) {
-                        visitor.accept(filePropertySpec.getPropertyFiles());
-                    }
-                }
-            }
-        };
-        this.hasSourceFiles = inputFileProperties.stream()
-            .anyMatch(InputFilePropertySpec::isSkipWhenEmpty);
-        this.outputFiles = new CompositeFileCollection() {
-            @Override
-            public String getDisplayName() {
-                return "output files";
-            }
-
-            @Override
-            protected void visitChildren(Consumer<FileCollectionInternal> visitor) {
-                for (FilePropertySpec propertySpec : outputFileProperties) {
-                    visitor.accept(propertySpec.getPropertyFiles());
-                }
-            }
-        };
         this.localStateFiles = localStateFiles;
         this.destroyableFiles = destroyableFiles;
     }
@@ -173,28 +131,13 @@ public class DefaultTaskProperties implements TaskProperties {
     }
 
     @Override
-    public FileCollection getOutputFiles() {
-        return outputFiles;
-    }
-
-    @Override
-    public FileCollection getSourceFiles() {
-        return sourceFiles;
-    }
-
-    @Override
-    public boolean hasSourceFiles() {
-        return hasSourceFiles;
-    }
-
-    @Override
-    public FileCollection getInputFiles() {
-        return inputFiles;
-    }
-
-    @Override
     public ImmutableSortedSet<InputFilePropertySpec> getInputFileProperties() {
         return inputFileProperties;
+    }
+
+    @Override
+    public ImmutableSortedSet<ServiceReferenceSpec> getServiceReferences() {
+        return serviceReferences;
     }
 
     @Override
@@ -203,7 +146,7 @@ public class DefaultTaskProperties implements TaskProperties {
     }
 
     @Override
-    public void validate(TaskValidationContext validationContext) {
+    public void validate(PropertyValidationContext validationContext) {
         for (ValidatingProperty validatingProperty : validatingProperties) {
             validatingProperty.validate(validationContext);
         }
@@ -212,14 +155,6 @@ public class DefaultTaskProperties implements TaskProperties {
     @Override
     public boolean hasDeclaredOutputs() {
         return hasDeclaredOutputs;
-    }
-
-    @Override
-    public boolean hasUntrackedProperties() {
-        return Stream.concat(
-            inputFileProperties.stream(),
-            outputFileProperties.stream()
-        ).anyMatch(property -> property.getContentTracking() == ContentTracking.UNTRACKED);
     }
 
     @Override
@@ -237,7 +172,7 @@ public class DefaultTaskProperties implements TaskProperties {
         return destroyableFiles;
     }
 
-    private static class GetLocalStateVisitor extends PropertyVisitor.Adapter {
+    private static class GetLocalStateVisitor implements PropertyVisitor {
         private final String beanName;
         private final FileCollectionFactory fileCollectionFactory;
         private final List<Object> localState = new ArrayList<>();
@@ -257,7 +192,7 @@ public class DefaultTaskProperties implements TaskProperties {
         }
     }
 
-    private static class GetDestroyablesVisitor extends PropertyVisitor.Adapter {
+    private static class GetDestroyablesVisitor implements PropertyVisitor {
         private final String beanName;
         private final FileCollectionFactory fileCollectionFactory;
         private final List<Object> destroyables = new ArrayList<>();
@@ -277,23 +212,25 @@ public class DefaultTaskProperties implements TaskProperties {
         }
     }
 
-    private static class ValidationVisitor extends PropertyVisitor.Adapter implements OutputUnpacker.UnpackedOutputConsumer {
+    private static class ValidationVisitor implements OutputUnpacker.UnpackedOutputConsumer, PropertyVisitor {
         private final List<ValidatingProperty> taskPropertySpecs = new ArrayList<>();
 
         @Override
         public void visitInputFileProperty(
             String propertyName,
             boolean optional,
-            boolean skipWhenEmpty,
+            InputBehavior behavior,
             DirectorySensitivity directorySensitivity,
             LineEndingSensitivity lineEndingSensitivity,
-            boolean incremental,
-            @Nullable Class<? extends FileNormalizer> fileNormalizer,
+            @Nullable FileNormalizer fileNormalizer,
             PropertyValue value,
-            InputFilePropertyType filePropertyType,
-            ContentTracking contentTracking
+            InputFilePropertyType filePropertyType
         ) {
-            taskPropertySpecs.add(new DefaultFinalizingValidatingProperty(propertyName, value, optional, filePropertyType.getValidationAction()));
+            ValidationAction validationAction =
+                filePropertyType == InputFilePropertyType.FILES && !optional
+                    ? ValidationActions.REQUIRED_INPUT_FILES
+                    : ValidationActions.inputValidationActionFor(filePropertyType);
+            taskPropertySpecs.add(new DefaultFinalizingValidatingProperty(propertyName, value, optional, validationAction));
         }
 
         @Override
@@ -305,7 +242,7 @@ public class DefaultTaskProperties implements TaskProperties {
         public void visitUnpackedOutputFileProperty(String propertyName, boolean optional, PropertyValue value, OutputFilePropertySpec spec) {
             taskPropertySpecs.add(new DefaultValidatingProperty(
                 propertyName,
-                new StaticValue(spec.getOutputFile()),
+                new ResolvingValue(value, delegate -> spec.getOutputFile()),
                 optional,
                 ValidationActions.outputValidationActionFor(spec))
             );
@@ -316,8 +253,40 @@ public class DefaultTaskProperties implements TaskProperties {
             taskPropertySpecs.add(new DefaultValidatingProperty(propertyName, value, optional, ValidationActions.NO_OP));
         }
 
+        @Override
+        public void visitServiceReference(String propertyName, boolean optional, PropertyValue value, @Nullable String serviceName, Class<? extends BuildService<?>> buildServiceType) {
+            // Service reference declared via annotation, validate it
+            taskPropertySpecs.add(new DefaultValidatingProperty(propertyName, value, optional, ValidationActions.NO_OP));
+        }
+
         public List<ValidatingProperty> getTaskPropertySpecs() {
             return taskPropertySpecs;
+        }
+    }
+
+    private static class ResolvingValue implements PropertyValue {
+        private final PropertyValue delegate;
+        private final Function<Object, Object> resolver;
+
+        public ResolvingValue(PropertyValue delegate, Function<Object, Object> resolver) {
+            this.delegate = delegate;
+            this.resolver = resolver;
+        }
+
+        @Override
+        public TaskDependencyContainer getTaskDependencies() {
+            return delegate.getTaskDependencies();
+        }
+
+        @Override
+        public void maybeFinalizeValue() {
+            delegate.maybeFinalizeValue();
+        }
+
+        @Nullable
+        @Override
+        public Object call() {
+            return resolver.apply(delegate.call());
         }
     }
 }

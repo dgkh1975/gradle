@@ -117,26 +117,25 @@ public class DefaultObjectConfigurationAction implements ObjectConfigurationActi
             scriptUri,
             false,
             () -> {
-                String message =
-                    "Applying script plugins from insecure URIs, without explicit opt-in, is unsupported. " +
-                        String.format("The provided URI '%s' uses an insecure protocol (HTTP). ", scriptUri) +
-                        String.format("Use '%s' instead or try 'apply from: resources.text.fromInsecureUri(\"%s\")' to fix this. ", GUtil.toSecureUrl(scriptUri), scriptUri) +
-                        Documentation
-                            .dslReference(TextResourceFactory.class, "fromInsecureUri(java.lang.Object)")
-                            .consultDocumentationMessage();
-                throw new InvalidUserCodeException(message);
+                throw reportInsecureScriptPluginFailureAsInvalidUserCodeException(
+                    String.format("Applying script plugins from insecure URIs, without explicit opt-in, is unsupported. The provided URI '%s' uses an insecure protocol (HTTP). ", scriptUri),
+                    String.format("Use '%s' instead or try 'apply from: resources.text.fromInsecureUri(\"%s\")'. ", GUtil.toSecureUrl(scriptUri), scriptUri)
+                );
             },
             redirect -> {
-                String message =
-                    "Applying script plugins from an insecure redirect, without explicit opt-in, is unsupported. " +
-                        "Switch to HTTPS or use TextResourceFactory.fromInsecureUri(Object) to fix this. " +
-                        String.format("'%s' redirects to insecure '%s'. ", scriptUri, redirect) +
-                        Documentation
-                            .dslReference(TextResourceFactory.class, "fromInsecureUri(java.lang.Object)")
-                            .consultDocumentationMessage();
-                throw new InvalidUserCodeException(message);
+                throw reportInsecureScriptPluginFailureAsInvalidUserCodeException(
+                    String.format("Applying script plugins from an insecure redirect, without explicit opt-in, is unsupported. '%s' redirects to insecure '%s'. ", scriptUri, redirect),
+                    "Switch to HTTPS or use TextResourceFactory.fromInsecureUri(Object)."
+                );
             }
         );
+    }
+
+    private static InvalidUserCodeException reportInsecureScriptPluginFailureAsInvalidUserCodeException(String message, String firstResolution) {
+        InvalidUserCodeException failure = new InvalidUserCodeException(message);
+        failure.addResolution(firstResolution);
+        failure.addResolution(Documentation.dslReference(TextResourceFactory.class, "fromInsecureUri(java.lang.Object)").getConsultDocumentationMessage());
+        return failure;
     }
 
     private void applyScript(Object script) {
@@ -149,7 +148,7 @@ public class DefaultObjectConfigurationAction implements ObjectConfigurationActi
             resource = textUriFileResourceLoaderFactory.create(redirectVerifier).loadUri("script", scriptUri);
         }
         ScriptSource scriptSource = new TextResourceScriptSource(resource);
-        ClassLoaderScope classLoaderScopeChild = classLoaderScope.createChild("script-" + scriptUri.toString());
+        ClassLoaderScope classLoaderScopeChild = classLoaderScope.createChild("script-" + scriptUri, null);
         ScriptHandler scriptHandler = scriptHandlerFactory.create(scriptSource, classLoaderScopeChild);
         ScriptPlugin configurer = configurerFactory.create(scriptSource, scriptHandler, classLoaderScopeChild, classLoaderScope, false);
         for (Object target : targets) {

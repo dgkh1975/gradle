@@ -17,10 +17,10 @@
 package org.gradle.api.provider;
 
 import org.gradle.api.Action;
-import org.gradle.api.Incubating;
+import org.gradle.api.Describable;
 import org.gradle.api.file.RegularFile;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import javax.inject.Inject;
 
 /**
@@ -42,14 +42,43 @@ import javax.inject.Inject;
  * To integrate a new type of value source, create an abstract subclass of this interface
  * and use {@link ProviderFactory#of(Class, Action)} to get a provider to a configured source.
  * The returned {@link org.gradle.api.provider.Provider} can be passed to tasks or queried
- * by build logic during the configuration phase, in which case the source would be automatically
+ * by build logic during the configuration phase. In the latter case, the source would be automatically
  * considered as an input to the work graph cache.
  * </p>
+ * <p>
+ * It is possible to have Gradle services <a href="https://docs.gradle.org/current/userguide/service_injection.html#service_injection">injected</a>
+ * into the implementation, similar to tasks and plugins.
+ * This can be done by adding a parameter to the constructor and annotating the
+ * constructor with the {@code @Inject} annotation:
+ * <pre>
+ * public abstract class MyValueSource implements ValueSource&lt;String, ValueSourceParameters.None&gt; {
+ *     private final ExecOperations execOperations;
+ *
+ *     {@literal @}Inject
+ *     public MyValueSource(ExecOperations execOperations) {
+ *         this.execOperations = execOperations;
+ *     }
+ *
+ *     {@literal @}Override
+ *     {@literal @}Nullable
+ *     public String obtain() {
+ *         // your custom implementation
+ *     }
+ * }
+ * </pre>
+ * Currently, only a small subset of services is supported:
+ * <ul>
+ *     <li>{@link org.gradle.process.ExecOperations} provides means to execute external processes.
+ *     It is possible to use this service even at configuration time. However, as the
+ *     returned value is used to check the configuration cache, the {@link #obtain()} method will
+ *     be called during each build. Calling slow commands here will slow things down.</li>
+ * </ul>
  *
  * <p>
  * A value source implementation will most likely take parameters. To do this create a
  * subtype of {@link ValueSourceParameters} and declare this type as the type parameter
- * to the value source implementation.
+ * to the value source implementation. Parameters are data holders, isolated before
+ * {@link #obtain()} is called; they must not inject services.
  * </p>
  *
  * <p>
@@ -57,8 +86,46 @@ import javax.inject.Inject;
  * to {@link #obtain()} is synchronized.
  * </p>
  *
+ * <p>
+ * A value source implementation is exempt from the automatic detection of work graph cache inputs.
+ * For example, if the {@link #obtain()} method calls {@code System.getenv("FOO")} then changes to
+ * the {@code FOO} environment variable only invalidate the cache if the value returned by the
+ * {@code obtain()} method itself changes. The same applies to reading files or system properties.
+ * Starting an external process with a standard API (for example, {@code java.lang.ProcessBuilder}) is
+ * also allowed.
+ * </p>
+ *
+ * <p>
+ * A {@code ValueSource} implementation can also implement {@link Describable}
+ * to provide a human-readable display name. Gradle uses this display name when reporting configuration
+ * cache invalidation reasons. Without it, the invalidation message uses the implementation class name,
+ * which may not be informative to users. For example:
+ * <pre class='autoTested'>
+ * import org.gradle.api.provider.ValueSourceParameters
+ *
+ * public abstract class GitCommitValueSource
+ *         implements ValueSource&lt;String, ValueSourceParameters.None&gt;, Describable {
+ *
+ *     {@literal @}Override
+ *     public String getDisplayName() {
+ *         return "current Git commit ID";
+ *     }
+ *
+ *     {@literal @}Override
+ *     public String obtain() {
+ *         return null;
+ *     }
+ * }
+ * </pre>
+ *
+ * Implementations of ValueSource are subject to the following constraint:
+ * <ul>
+ *     <li>Do not implement {@link #getParameters()} in your class, the method will be implemented by Gradle.</li>
+ * </ul>
+ *
  * @param <T> The type of value obtained from this source.
  * @param <P> The source specific parameter type.
+ * @see org.gradle.api.Describable
  * @see ProviderFactory#environmentVariable(String)
  * @see ProviderFactory#systemProperty(String)
  * @see ProviderFactory#fileContents(RegularFile)
@@ -66,7 +133,6 @@ import javax.inject.Inject;
  * @see <a href="https://docs.gradle.org/current/userguide/configuration_cache.html">Configuration Cache</a>
  * @since 6.1
  */
-@Incubating
 public interface ValueSource<T, P extends ValueSourceParameters> {
 
     /**
@@ -82,11 +148,13 @@ public interface ValueSource<T, P extends ValueSourceParameters> {
 
     /**
      * Obtains the value from the source. The returned value must be effectively immutable.
+     * The implementation is exempt from the automatic detection of work graph cache inputs.
      *
      * <p>This method must be implemented in the subclass.</p>
      * <p>This method is only called if the provider value is requested and only once in that case.</p>
      *
      * @return the value obtained or {@code null} if the value is not present.
+     * @since 6.1
      */
     @Nullable
     T obtain();

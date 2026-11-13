@@ -18,23 +18,18 @@ package org.gradle.api.internal.tasks.properties.annotations;
 
 import org.gradle.api.Task;
 import org.gradle.api.tasks.CacheableTask;
+import org.gradle.internal.properties.annotations.AbstractTypeAnnotationHandler;
 import org.gradle.internal.reflect.validation.TypeValidationContext;
 
-import java.lang.annotation.Annotation;
-
-import static org.gradle.api.internal.tasks.properties.annotations.TypeAnnotationHandlerSupport.reportInvalidUseOfCacheableAnnotation;
-
-public class CacheableTaskTypeAnnotationHandler implements TypeAnnotationHandler {
-    @Override
-    public Class<? extends Annotation> getAnnotationType() {
-        return CacheableTask.class;
+public class CacheableTaskTypeAnnotationHandler extends AbstractTypeAnnotationHandler {
+    public CacheableTaskTypeAnnotationHandler() {
+        super(CacheableTask.class);
     }
 
     @Override
     public void validateTypeMetadata(Class<?> classWithAnnotationAttached, TypeValidationContext visitor) {
         if (!Task.class.isAssignableFrom(classWithAnnotationAttached)) {
-            reportInvalidUseOfCacheableAnnotation(classWithAnnotationAttached, visitor, getAnnotationType(), Task.class);
+            reportInvalidUseOfTypeAnnotation(classWithAnnotationAttached, visitor, getAnnotationType(), Task.class);
         }
     }
-
 }

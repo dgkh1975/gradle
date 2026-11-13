@@ -16,12 +16,16 @@
 
 package org.gradle.api.internal.initialization;
 
+import org.gradle.api.artifacts.Dependency;
 import org.gradle.api.initialization.dsl.ScriptHandler;
 import org.gradle.internal.classpath.ClassPath;
+import org.gradle.internal.service.scopes.Scope;
+import org.gradle.internal.service.scopes.ServiceScope;
 
+@ServiceScope(Scope.Project.class)
 public interface ScriptHandlerInternal extends ScriptHandler {
 
-    void addScriptClassPathDependency(Object notation);
+    void addScriptClassPathDependency(Dependency dependency);
 
     /**
      * @return The script classpath as used at runtime.
@@ -31,5 +35,5 @@ public interface ScriptHandlerInternal extends ScriptHandler {
     /**
      * @return The resolved non-instrumented script classpath.
      */
-    ClassPath getNonInstrumentedScriptClassPath();
+    ClassPath getInstrumentedScriptClassPath();
 }

@@ -21,6 +21,8 @@ import org.gradle.internal.HasInternalProtocol;
 /**
  * The details object used to determine what to do with a
  * configuration variant when publishing.
+ * <p>
+ * This type also contains Maven specific information used to map the variant to a Maven POM file.
  *
  * @since 5.3
  */
@@ -28,11 +30,13 @@ import org.gradle.internal.HasInternalProtocol;
 public interface ConfigurationVariantDetails {
     /**
      * The configuration variant
+     * @since 5.3
      */
     ConfigurationVariant getConfigurationVariant();
 
     /**
      * Marks this configuration variant as being skipped when publishing.
+     * @since 5.3
      */
     void skip();
 
@@ -43,6 +47,7 @@ public interface ConfigurationVariantDetails {
      *     <li>For the Maven world, this means that dependencies will be declared as {@code optional}.</li>
      *     <li>For the Ivy world, this means that configuration marked optional will not be extended by the {@code default} configuration.</li>
      * </ul>
+     * @since 5.3
      */
     void mapToOptional();
 
@@ -67,6 +72,7 @@ public interface ConfigurationVariantDetails {
      * systematically be published as import scope.
      *  @param scope the Maven scope to use for dependencies found in this configuration variant
      *
+     * @since 5.3
      */
     void mapToMavenScope(String scope);
 }

@@ -25,7 +25,7 @@ class SourceTaskIntegrationTest extends AbstractIntegrationSpec {
         file("src/a/two.txt").createFile()
 
         buildFile << """
-            class TestTask extends SourceTask {
+            abstract class TestTask extends SourceTask {
                 @TaskAction
                 def list() {
                     source.visit { fte -> println("visit " + fte.relativePath) }
@@ -68,21 +68,21 @@ class SourceTaskIntegrationTest extends AbstractIntegrationSpec {
         file("src/a/two.txt").createFile()
 
         buildFile << """
-            class TestTask extends SourceTask {
+            abstract class TestTask extends SourceTask {
                 @OutputFile
                 File outputFile
+
+                TestTask() {
+                    inputs.files({ -> super.source })
+                        .ignoreEmptyDirectories(false)
+                        .withPathSensitivity(PathSensitivity.ABSOLUTE)
+                        .withPropertyName("sourcesWithEmptyDirectories")
+                }
 
                 @TaskAction
                 def list() {
                     source.visit { fte -> println("visit " + fte.relativePath) }
                     outputFile.text = 'executed'
-                }
-
-                @InputFiles
-                @SkipWhenEmpty
-                @PathSensitive(PathSensitivity.ABSOLUTE)
-                public FileTree getSourcesWithEmptyDirectories() {
-                    return super.getSource()
                 }
             }
 
@@ -129,7 +129,7 @@ class SourceTaskIntegrationTest extends AbstractIntegrationSpec {
         file("src/a/two.txt").createFile()
 
         buildFile << """
-            class TestTask extends SourceTask {
+            abstract class TestTask extends SourceTask {
                 @OutputFile
                 File outputFile
 

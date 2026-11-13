@@ -17,15 +17,14 @@
 package org.gradle.internal.fingerprint.impl;
 
 import org.gradle.api.file.FileCollection;
+import org.gradle.api.internal.file.DelegatingFileCollectionStructureVisitor;
 import org.gradle.api.internal.file.FileCollectionInternal;
 import org.gradle.api.internal.file.FileCollectionStructureVisitor;
 import org.gradle.api.internal.file.FileTreeInternal;
 import org.gradle.api.internal.file.collections.FileSystemMirroringFileTree;
 import org.gradle.api.tasks.util.PatternSet;
-import org.gradle.internal.execution.fingerprint.FileCollectionSnapshotter;
-import org.gradle.internal.file.FileType;
+import org.gradle.internal.execution.FileCollectionSnapshotter;
 import org.gradle.internal.file.Stat;
-import org.gradle.internal.fingerprint.GenericFileTreeSnapshotter;
 import org.gradle.internal.snapshot.CompositeFileSystemSnapshot;
 import org.gradle.internal.snapshot.FileSystemSnapshot;
 import org.gradle.internal.vfs.FileSystemAccess;
@@ -36,53 +35,49 @@ import java.util.List;
 
 public class DefaultFileCollectionSnapshotter implements FileCollectionSnapshotter {
     private final FileSystemAccess fileSystemAccess;
-    private final GenericFileTreeSnapshotter genericFileTreeSnapshotter;
     private final Stat stat;
 
-    public DefaultFileCollectionSnapshotter(FileSystemAccess fileSystemAccess, GenericFileTreeSnapshotter genericFileTreeSnapshotter, Stat stat) {
+    public DefaultFileCollectionSnapshotter(FileSystemAccess fileSystemAccess, Stat stat) {
         this.fileSystemAccess = fileSystemAccess;
-        this.genericFileTreeSnapshotter = genericFileTreeSnapshotter;
         this.stat = stat;
     }
 
     @Override
-    public FileSystemSnapshot snapshot(FileCollection fileCollection) {
-        SnapshottingVisitor visitor = new SnapshottingVisitor();
-        ((FileCollectionInternal) fileCollection).visitStructure(visitor);
-        return CompositeFileSystemSnapshot.of(visitor.getRoots());
+    public FileSystemSnapshot snapshot(FileCollection fileCollection, FileCollectionStructureVisitor visitor) {
+        SnapshottingVisitor snapshottingVisitor = new SnapshottingVisitor(visitor);
+        ((FileCollectionInternal) fileCollection).visitStructure(snapshottingVisitor);
+        return CompositeFileSystemSnapshot.of(snapshottingVisitor.getRoots());
     }
 
-    private class SnapshottingVisitor implements FileCollectionStructureVisitor {
+    private class SnapshottingVisitor extends DelegatingFileCollectionStructureVisitor {
         private final List<FileSystemSnapshot> roots = new ArrayList<>();
+
+        private SnapshottingVisitor(FileCollectionStructureVisitor delegate) {
+            super(delegate);
+        }
 
         @Override
         public void visitCollection(FileCollectionInternal.Source source, Iterable<File> contents) {
+            super.visitCollection(source, contents);
             for (File file : contents) {
-                fileSystemAccess.read(file.getAbsolutePath(), roots::add);
+                roots.add(fileSystemAccess.read(file.getAbsolutePath()));
             }
         }
 
         @Override
-        public void visitGenericFileTree(FileTreeInternal fileTree, FileSystemMirroringFileTree sourceTree) {
-            roots.add(genericFileTreeSnapshotter.snapshotFileTree(fileTree));
-        }
-
-        @Override
         public void visitFileTree(File root, PatternSet patterns, FileTreeInternal fileTree) {
+            super.visitFileTree(root, patterns, fileTree);
             fileSystemAccess.read(
-                root.getAbsolutePath(),
-                new PatternSetSnapshottingFilter(patterns, stat),
-                snapshot -> {
-                    if (snapshot.getType() != FileType.Missing) {
-                        roots.add(snapshot);
-                    }
-                }
-            );
+                    root.getAbsolutePath(),
+                    new PatternSetSnapshottingFilter(patterns, stat)
+                )
+                .ifPresent(roots::add);
         }
 
         @Override
         public void visitFileTreeBackedByFile(File file, FileTreeInternal fileTree, FileSystemMirroringFileTree sourceTree) {
-            fileSystemAccess.read(file.getAbsolutePath(), roots::add);
+            super.visitFileTreeBackedByFile(file, fileTree, sourceTree);
+            roots.add(fileSystemAccess.read(file.getAbsolutePath()));
         }
 
         public List<FileSystemSnapshot> getRoots() {

@@ -16,39 +16,42 @@
 
 package gradlebuild.docs;
 
-import org.gradle.api.file.ConfigurableFileCollection;
+import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.file.RegularFileProperty;
 
-public abstract class ReleaseNotes {
+public interface ReleaseNotes {
     /**
-     * The source markdown file for the release notes.
+     * The source Markdown file for the release notes.
      */
-    public abstract RegularFileProperty getMarkdownFile();
+    RegularFileProperty getMarkdownFile();
 
     /**
      * The base CSS file used by all documentation.
      */
-    public abstract RegularFileProperty getBaseCssFile();
+    RegularFileProperty getBaseCssFile();
 
     /**
      * The release notes specific CSS file
      */
-    public abstract RegularFileProperty getReleaseNotesCssFile();
+    RegularFileProperty getReleaseNotesCssFile();
 
     /**
-     * The Javascript embedded in the release notes
+     * The JavaScript embedded in the release notes
      */
-    public abstract RegularFileProperty getReleaseNotesJsFile();
+    RegularFileProperty getReleaseNotesJsFile();
 
     /**
-     * The Jquery file to include in the release notes.
+     * The location of the release notes assets
      */
-    public abstract ConfigurableFileCollection getJquery();
+    DirectoryProperty getReleaseNotesAssets();
 
-    // TODO: Need staging root property too
+    /**
+     * Intermediate working directory for release notes rendering.
+     */
+    DirectoryProperty getStagingRoot();
 
     /**
      * The collection of rendered documentation.
      */
-    public abstract RegularFileProperty getRenderedDocumentation();
+    RegularFileProperty getRenderedDocumentation();
 }

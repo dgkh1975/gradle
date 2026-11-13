@@ -29,15 +29,16 @@ import org.gradle.api.initialization.Settings
 import org.gradle.api.internal.InternalAction
 import org.gradle.api.invocation.Gradle
 import org.gradle.api.tasks.testing.TestListener
-import org.gradle.initialization.BuildCompletionListener
-import org.gradle.internal.DisplayName
 import org.gradle.internal.InternalBuildAdapter
 import org.gradle.internal.InternalListener
+import org.gradle.internal.code.DefaultUserCodeApplicationContext
+import org.gradle.internal.code.UserCodeApplicationContext
+import org.gradle.internal.code.UserCodeApplicationId
+import org.gradle.internal.code.UserCodeSource
 import org.gradle.internal.event.DefaultListenerManager
-import org.gradle.internal.operations.TestBuildOperationExecutor
-import org.gradle.internal.service.scopes.Scopes
+import org.gradle.internal.operations.TestBuildOperationRunner
+import org.gradle.internal.service.scopes.Scope
 import spock.lang.Specification
-import spock.lang.Unroll
 
 class DefaultListenerBuildOperationDecoratorTest extends Specification {
 
@@ -45,11 +46,16 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
 
     private static interface InternalTaskExecutionGraphListener extends TaskExecutionGraphListener, InternalListener {}
 
-    private static interface ComboListener extends BuildListener, ProjectEvaluationListener, TaskExecutionGraphListener, BuildCompletionListener {}
+    private static interface Other {
+        void completed()
+    }
 
-    def buildOperationExecutor = new TestBuildOperationExecutor()
-    def context = new DefaultUserCodeApplicationContext()
-    def decorator = new DefaultListenerBuildOperationDecorator(buildOperationExecutor, context)
+    private static interface ComboListener extends BuildListener, ProjectEvaluationListener, TaskExecutionGraphListener, Other {}
+
+    def buildOperationRunner = new TestBuildOperationRunner()
+    def target = UserCodeApplicationContext.Target.Other.INSTANCE
+    def context = new DefaultUserCodeApplicationContext(System::nanoTime).tap { it.startTrackingApplications() }
+    def decorator = new DefaultListenerBuildOperationDecorator(buildOperationRunner, context)
 
     def 'ignores implementers of InternalListener'() {
         given:
@@ -91,8 +97,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedAction
 
         when:
-
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedAction = decorator.decorate('foo', action)
         }
@@ -117,7 +122,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def arg = new Object()
         def id
         def decoratedAction
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedAction = decorator.decorate('foo', action)
         }
@@ -148,7 +153,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedClosure
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedClosure = decorator.decorate('foo', closure)
         }
@@ -180,7 +185,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedClosure
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedClosure = decorator.decorate('foo', closure)
         }
@@ -211,7 +216,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedClosure
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedClosure = decorator.decorate('foo', closure)
         }
@@ -240,7 +245,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedClosure
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedClosure = decorator.decorate('foo', closure)
         }
@@ -268,7 +273,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def id
         def decoratedClosure
 
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedClosure = decorator.decorate('foo', closure)
         }
@@ -284,7 +289,6 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         verifyExpectedOp('foo', id, failure)
     }
 
-    @Unroll
     def 'decorates BuildListener listeners'() {
         given:
         def settingsEvaluatedArg = Mock(Settings)
@@ -296,7 +300,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedListener
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedListener = decorateAsObject ? decorator.decorateUnknownListener('foo', listener) as BuildListener : decorator.decorate('foo', BuildListener, listener)
         }
@@ -366,7 +370,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def id
         def decoratedListener
 
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedListener = decorator.decorate('foo', BuildListener, listener)
         }
@@ -426,7 +430,6 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         verifyNoOp()
     }
 
-    @Unroll
     def 'decorates ProjectEvaluationListener listeners'() {
         given:
         def beforeEvaluateArg = Mock(Project)
@@ -437,7 +440,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedListener
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedListener = decorateAsObject ? decorator.decorateUnknownListener('foo', listener) as ProjectEvaluationListener : decorator.decorate('foo', ProjectEvaluationListener, listener)
         }
@@ -468,7 +471,6 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         decorateAsObject << [true, false]
     }
 
-    @Unroll
     def 'decorates TaskExecutionGraphListener listeners'() {
         given:
         def arg = Mock(TaskExecutionGraph)
@@ -477,7 +479,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedListener
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedListener = decorateAsObject ? decorator.decorateUnknownListener('foo', listener) as TaskExecutionGraphListener : decorator.decorate('foo', TaskExecutionGraphListener, listener)
         }
@@ -509,7 +511,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decoratedListener
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             id = it
             decoratedListener = decorator.decorateUnknownListener('foo', listener) as ComboListener
         }
@@ -568,7 +570,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
 
     def 'decorated listeners can be removed from listener manager'() {
         given:
-        def listenerManager = new DefaultListenerManager(Scopes.Build)
+        def listenerManager = new DefaultListenerManager(Scope.Build)
         def gradle = Mock(Gradle)
         boolean called = false
         def undecorated = new BuildAdapter() {
@@ -581,7 +583,7 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
         def decorated
 
         when:
-        context.apply(Stub(DisplayName)) {
+        context.apply(Stub(UserCodeSource), target) {
             decorated = decorator.decorate('foo', BuildListener, undecorated)
         }
         listenerManager.addListener(decorated)
@@ -600,16 +602,16 @@ class DefaultListenerBuildOperationDecoratorTest extends Specification {
     }
 
     private void resetOps() {
-        buildOperationExecutor.reset()
+        buildOperationRunner.reset()
     }
 
     private void verifyNoOp() {
-        assert buildOperationExecutor.operations.empty
+        assert buildOperationRunner.operations.empty
     }
 
     private void verifyExpectedOp(String expectedRegistrationPoint, UserCodeApplicationId id, Throwable failure = null) {
-        assert buildOperationExecutor.log.records.size() == 1
-        def record = buildOperationExecutor.log.records.first()
+        assert buildOperationRunner.log.records.size() == 1
+        def record = buildOperationRunner.log.records.first()
         def op = record.descriptor
         assert op.displayName == "Execute $expectedRegistrationPoint listener"
         assert (op.details as ExecuteListenerBuildOperationType.Details).applicationId == id.longValue()

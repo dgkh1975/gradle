@@ -21,23 +21,23 @@ import org.gradle.initialization.ConfigureBuildBuildOperationType;
 import org.gradle.internal.operations.BuildOperationCategory;
 import org.gradle.internal.operations.BuildOperationContext;
 import org.gradle.internal.operations.BuildOperationDescriptor;
-import org.gradle.internal.operations.BuildOperationExecutor;
+import org.gradle.internal.operations.BuildOperationRunner;
 import org.gradle.internal.operations.RunnableBuildOperation;
 
 public class BuildOperationFiringProjectsPreparer implements ProjectsPreparer {
     private static final ConfigureBuildBuildOperationType.Result CONFIGURE_BUILD_RESULT = new ConfigureBuildBuildOperationType.Result() {
     };
     private final ProjectsPreparer delegate;
-    private final BuildOperationExecutor buildOperationExecutor;
+    private final BuildOperationRunner buildOperationRunner;
 
-    public BuildOperationFiringProjectsPreparer(ProjectsPreparer delegate, BuildOperationExecutor buildOperationExecutor) {
+    public BuildOperationFiringProjectsPreparer(ProjectsPreparer delegate, BuildOperationRunner buildOperationRunner) {
         this.delegate = delegate;
-        this.buildOperationExecutor = buildOperationExecutor;
+        this.buildOperationRunner = buildOperationRunner;
     }
 
     @Override
     public void prepareProjects(GradleInternal gradle) {
-        buildOperationExecutor.run(new ConfigureBuild(gradle));
+        buildOperationRunner.run(new ConfigureBuild(gradle));
     }
 
     private class ConfigureBuild implements RunnableBuildOperation {
@@ -55,7 +55,7 @@ public class BuildOperationFiringProjectsPreparer implements ProjectsPreparer {
 
         @Override
         public BuildOperationDescriptor.Builder description() {
-            BuildOperationDescriptor.Builder builder = BuildOperationDescriptor.displayName(gradle.contextualize("Configure build"));
+            BuildOperationDescriptor.Builder builder = BuildOperationDescriptor.displayName("Configure build").owner(gradle.getOwner());
             if (gradle.isRootBuild()) {
                 builder.metadata(BuildOperationCategory.CONFIGURE_ROOT_BUILD);
             } else {

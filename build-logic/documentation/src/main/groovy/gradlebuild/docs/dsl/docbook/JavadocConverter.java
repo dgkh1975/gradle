@@ -15,7 +15,7 @@
  */
 package gradlebuild.docs.dsl.docbook;
 
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.gradle.api.GradleException;
 import gradlebuild.docs.dsl.source.model.ClassMetaData;
 import gradlebuild.docs.dsl.source.model.MethodMetaData;
@@ -466,6 +466,10 @@ public class JavadocConverter {
                 }
                 currentTable = document.createElement("table");
                 nodes.push(currentTable);
+                return true;
+            }
+            if (elementName.equals("caption")) {
+                nodes.push(document.createElement("caption"));
                 return true;
             }
             if (elementName.equals("tr")) {

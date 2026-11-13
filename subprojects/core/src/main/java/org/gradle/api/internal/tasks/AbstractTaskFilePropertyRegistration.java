@@ -16,12 +16,11 @@
 
 package org.gradle.api.internal.tasks;
 
-import org.gradle.api.internal.tasks.properties.ContentTracking;
+import org.gradle.internal.properties.StaticValue;
 
 public abstract class AbstractTaskFilePropertyRegistration implements TaskPropertyRegistration {
     private String propertyName;
     private boolean optional;
-    private ContentTracking contentTracking = ContentTracking.TRACKED;
     private final StaticValue value;
 
     public AbstractTaskFilePropertyRegistration(StaticValue value) {
@@ -44,18 +43,13 @@ public abstract class AbstractTaskFilePropertyRegistration implements TaskProper
     }
 
     public void setPropertyName(String propertyName) {
-        this.propertyName = TaskPropertyUtils.checkPropertyName(propertyName);
+        if (propertyName.isEmpty()) {
+            throw new IllegalArgumentException("Property name must not be empty string");
+        }
+        this.propertyName = propertyName;
     }
 
     public void setOptional(boolean optional) {
         this.optional = optional;
-    }
-
-    public ContentTracking getContentTracking() {
-        return contentTracking;
-    }
-
-    public void setContentTracking(ContentTracking contentTracking) {
-        this.contentTracking = contentTracking;
     }
 }

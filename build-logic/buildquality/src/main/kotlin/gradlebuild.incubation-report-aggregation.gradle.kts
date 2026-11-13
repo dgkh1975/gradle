@@ -1,11 +1,15 @@
+import gradlebuild.basics.buildCommitId
+import gradlebuild.basics.capitalize
+import gradlebuild.basics.releasedVersionsFile
+import gradlebuild.basics.repoRoot
 import gradlebuild.incubation.tasks.IncubatingApiAggregateReportTask
+import org.gradle.api.artifacts.component.ProjectComponentIdentifier
 
 plugins {
     id("base")
 }
 
-val reports by configurations.creating {
-    isVisible = false
+val reports = configurations.create("reports") {
     isCanBeResolved = false
     isCanBeConsumed = false
     description = "Dependencies to aggregate reports from"
@@ -14,19 +18,23 @@ val reports by configurations.creating {
 val allIncubationReports = tasks.register<IncubatingApiAggregateReportTask>("allIncubationReports") {
     group = "verification"
     reports.from(resolver("txt"))
-    htmlReportFile.set(project.layout.buildDirectory.file("reports/incubation/all-incubating.html"))
+    htmlReportFile = project.layout.buildDirectory.file("reports/incubation/all-incubating.html")
+    csvReportFile = project.layout.buildDirectory.file("reports/incubation/all-incubating.csv")
+    currentCommit = project.buildCommitId
+    versionFile = repoRoot().file("version.txt")
+    releasedVersionsFile = releasedVersionsFile()
 }
 
 tasks.register<Zip>("allIncubationReportsZip") {
     group = "verification"
-    destinationDirectory.set(layout.buildDirectory.dir("reports/incubation"))
-    archiveBaseName.set("incubating-apis")
+    destinationDirectory = layout.buildDirectory.dir("reports/incubation")
+    archiveBaseName = "incubating-apis"
     from(allIncubationReports.get().htmlReportFile)
+    from(allIncubationReports.get().csvReportFile)
     from(resolver("html"))
 }
 
 fun resolver(reportType: String) = configurations.create("incubatingReport${reportType.capitalize()}Path") {
-    isVisible = false
     isCanBeResolved = true
     isCanBeConsumed = false
     attributes {
@@ -35,4 +43,8 @@ fun resolver(reportType: String) = configurations.create("incubatingReport${repo
         attribute(DocsType.DOCS_TYPE_ATTRIBUTE, objects.named("incubation-report-$reportType"))
     }
     extendsFrom(reports)
-}.incoming.artifactView { lenient(true) }.files
+}.incoming.artifactView {
+    lenient(true)
+    // Only projects produce reports. If an external module of the distribution resolves, its jar would be treated as a report.
+    componentFilter { it is ProjectComponentIdentifier }
+}.files

@@ -2,13 +2,17 @@ plugins {
     id("gradlebuild.build-logic.kotlin-dsl-gradle-plugin")
 }
 
+description = "Provides plugins that configure profiling tools (jmh and Build Scan)"
+
 dependencies {
-    implementation("com.gradle:gradle-enterprise-gradle-plugin")
+    implementation(buildLibs.develocityPlugin)
 
-    implementation(project(":basics"))
-    implementation(project(":documentation"))
-    implementation(project(":module-identity"))
+    implementation("gradlebuild:basics")
+    implementation("gradlebuild:module-identity")
 
-    implementation("me.champeau.jmh:jmh-gradle-plugin")
-    implementation("org.jsoup:jsoup")
+    implementation(projects.documentation)
+    implementation(projects.integrationTesting)
+    implementation(projects.jvm)
+
+    implementation(buildLibs.jmhPlugin)
 }

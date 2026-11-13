@@ -15,28 +15,33 @@
  */
 package org.gradle.api.file
 
+import org.gradle.api.problems.Severity
 import org.gradle.api.tasks.Classpath
 import org.gradle.api.tasks.CompileClasspath
 import org.gradle.api.tasks.InputDirectory
 import org.gradle.api.tasks.InputFile
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.internal.reflect.problems.ValidationProblemId
 import org.gradle.internal.reflect.validation.ValidationMessageChecker
-import org.gradle.internal.reflect.validation.ValidationTestFor
-import org.gradle.util.Requires
-import org.gradle.util.TestPrecondition
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
+import org.gradle.test.preconditions.FileSystemTestPreconditions
+
 import spock.lang.Issue
-import spock.lang.Unroll
 
 import static org.gradle.util.internal.TextUtil.escapeString
 import static org.gradle.work.ChangeType.ADDED
-import static org.gradle.work.ChangeType.MODIFIED
+import static org.gradle.work.ChangeType.REMOVED
 
-@Unroll
-@Requires(TestPrecondition.SYMLINKS)
+@Requires(value = [
+    FileSystemTestPreconditions.Symlinks,
+    TestExecutionPreconditions.NotEmbeddedExecutor,
+], reason = "requires isolated daemons for symlink data cleanup between builds")
 class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec implements ValidationMessageChecker {
     def setup() {
         expectReindentedValidationMessage()
+        // This is required for the daemon to clean up symlinks between builds
+        executer.requireDaemon()
+        executer.requireIsolatedDaemons()
     }
 
     def "#desc can handle symlinks"() {
@@ -68,11 +73,11 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
         noExceptionThrown()
 
         where:
-        desc                                 | code
-        "project.files()"                    | "project.files(file, symlink, symlinked)"
-        "project.fileTree()"                 | "project.fileTree(baseDir)"
-        "project.layout.files()"             | "project.layout.files(file, symlink, symlinked)"
-        "project.objects.fileCollection()"   | "project.objects.fileCollection().from(file, symlink, symlinked)"
+        desc                               | code
+        "project.files()"                  | "project.files(file, symlink, symlinked)"
+        "project.fileTree()"               | "project.fileTree(baseDir)"
+        "project.layout.files()"           | "project.layout.files(file, symlink, symlinked)"
+        "project.objects.fileCollection()" | "project.objects.fileCollection().from(file, symlink, symlinked)"
     }
 
     @Issue("https://github.com/gradle/gradle/issues/1365")
@@ -314,7 +319,7 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
     @Issue('https://github.com/gradle/gradle/issues/9904')
     def "unbreaking a symlink in InputFiles is detected incrementally"() {
         def inputFileTarget = file("brokenInputFileTarget")
-        def brokenInputFile = file('brokenInputFile').createLink(inputFileTarget)
+        def brokenInputFile = file('brokenInputFile')
         def output = file("output.txt")
 
         buildFile << """
@@ -337,9 +342,10 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
         run 'inputBrokenLinkNameCollector'
         then:
         executedAndNotSkipped ':inputBrokenLinkNameCollector'
-        output.text == "${[ADDED]}"
+        output.text == "[]"
 
         when:
+        brokenInputFile.createLink(inputFileTarget)
         run 'inputBrokenLinkNameCollector'
         then:
         skipped ':inputBrokenLinkNameCollector'
@@ -349,7 +355,7 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
         run 'inputBrokenLinkNameCollector'
         then:
         executedAndNotSkipped ':inputBrokenLinkNameCollector'
-        output.text == "${[MODIFIED]}"
+        output.text == "${[ADDED]}"
 
         when:
         run 'inputBrokenLinkNameCollector'
@@ -361,13 +367,11 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
         run 'inputBrokenLinkNameCollector'
         then:
         executedAndNotSkipped ':inputBrokenLinkNameCollector'
-        output.text == "${[MODIFIED]}"
+        output.text == "${[REMOVED]}"
     }
 
-    @ValidationTestFor(
-        ValidationProblemId.INPUT_FILE_DOES_NOT_EXIST
-    )
     def "broken symlink in #inputType.simpleName fails validation"() {
+        enableProblemsApiCheck()
         def brokenInputFile = file('brokenInput').createLink("brokenInputFileTarget")
         buildFile << """
             class CustomTask extends DefaultTask {
@@ -384,13 +388,24 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
         fails 'brokenInput'
 
         then:
-        failureDescriptionContains(inputDoesNotExist {
-            type('CustomTask')
-            property('brokenInputFile')
-            kind(inputName)
-            missing(brokenInputFile)
-            includeLink()
-        })
+
+        verifyAll(receivedProblem(0)) {
+            severity == Severity.ERROR
+            fqid == 'Gradle:Build Definition:Input file does not exist'
+            def inputNameLc = inputName.toLowerCase()
+            definition.id.displayName == 'Input file does not exist'
+            contextualLabel == "Type \'CustomTask\' property \'brokenInputFile\' specifies ${inputNameLc} \'$brokenInputFile\' which doesn\'t exist"
+            details == 'An input file was expected to be present but it doesn\'t exist'
+            definition.documentationLink.url == "https://docs.gradle.org/${distribution.version.version}/userguide/validation_problems.html#input_file_does_not_exist"
+            solutions == [
+                "Make sure the ${inputNameLc} exists before the task is called",
+                "Make sure that the task which produces the $inputNameLc is declared as an input",
+            ].collect{it.toString() }
+            additionalData.asMap == [
+                'typeName' : 'CustomTask',
+                'propertyName' : 'brokenInputFile',
+            ]
+        }
 
         where:
         inputName   | inputType
@@ -458,7 +473,7 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
     }
 
     @Issue('https://github.com/gradle/gradle/issues/9904')
-    def "directory with broken symlink and @SkipWhenEmpty fails"() {
+    def "directory with broken symlink and @SkipWhenEmpty executes the task action"() {
         def root = file('root').createDir()
         def brokenInputFile = root.file('BrokenInputFile').createLink("BrokenInputFileTarget")
 
@@ -475,8 +490,8 @@ class FileCollectionSymlinkIntegrationTest extends AbstractIntegrationSpec imple
         assert !brokenInputFile.exists()
 
         when:
-        fails 'brokenDirectoryWithSkipWhenEmpty'
+        run 'brokenDirectoryWithSkipWhenEmpty'
         then:
-        failure.assertHasCause("Couldn't follow symbolic link '${brokenInputFile}'.")
+        executedAndNotSkipped(':brokenDirectoryWithSkipWhenEmpty')
     }
 }

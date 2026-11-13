@@ -16,10 +16,9 @@
 
 package org.gradle.api.internal.component;
 
-import org.gradle.api.attributes.Usage;
 import org.gradle.api.component.SoftwareComponentVariant;
 
-public interface UsageContext extends SoftwareComponentVariant {
-    @Deprecated
-    Usage getUsage(); // kept for backwards compatibility of plugins (like kotlin-multiplatform) using internal APIs
-}
+/**
+ * This is a legacy type and should be avoided if possible. Use {@link SoftwareComponentVariant} instead.
+ */
+public interface UsageContext extends SoftwareComponentVariant {}

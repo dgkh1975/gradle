@@ -16,7 +16,7 @@
 
 package org.gradle.initialization;
 
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Uniquely identifies a {@link org.gradle.api.internal.initialization.ClassLoaderScope} in
@@ -29,7 +29,9 @@ public interface ClassLoaderScopeId {
 
     String getName();
 
+    @Override
     boolean equals(Object other);
 
+    @Override
     int hashCode();
 }

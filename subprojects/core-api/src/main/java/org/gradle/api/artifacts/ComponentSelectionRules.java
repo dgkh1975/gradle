@@ -17,10 +17,11 @@
 package org.gradle.api.artifacts;
 
 import groovy.lang.Closure;
+import groovy.lang.DelegatesTo;
 import org.gradle.api.Action;
 import org.gradle.internal.HasInternalProtocol;
 
-/***
+/**
  * Represents a container for component selection rules.  Rules can be applied as part of the
  * resolutionStrategy of a configuration and individual components can be explicitly accepted
  * or rejected by rule.  Components that are neither accepted or rejected will be subject to
@@ -53,6 +54,7 @@ import org.gradle.internal.HasInternalProtocol;
  *         }
  *     }
  * </pre>
+ * @since 2.2
  */
 @HasInternalProtocol
 public interface ComponentSelectionRules {
@@ -62,6 +64,7 @@ public interface ComponentSelectionRules {
      *
      * @param selectionAction the Action that implements a rule to be applied
      * @return this
+     * @since 2.2
      */
     ComponentSelectionRules all(Action<? super ComponentSelection> selectionAction);
 
@@ -72,8 +75,9 @@ public interface ComponentSelectionRules {
      *
      * @param closure the Closure that implements a rule to be applied
      * @return this
+     * @since 2.2
      */
-    ComponentSelectionRules all(Closure<?> closure);
+    ComponentSelectionRules all(@DelegatesTo(ComponentSelection.class) Closure<?> closure);
 
     /**
      * Adds a rule-source backed component selection rule that will apply to all resolved components.
@@ -88,7 +92,10 @@ public interface ComponentSelectionRules {
      *
      * @param ruleSource an instance providing a rule implementation
      * @return this
+     * @deprecated use {@link #all(Action)} instead.
+     * @since 2.2
      */
+    @Deprecated
     ComponentSelectionRules all(Object ruleSource);
 
     /**
@@ -98,6 +105,7 @@ public interface ComponentSelectionRules {
      * @param id the module to apply this rule to in "group:module" format or as a {@link org.gradle.api.artifacts.ModuleIdentifier}
      * @param selectionAction the Action that implements a rule to be applied
      * @return this
+     * @since 2.2
      */
     ComponentSelectionRules withModule(Object id, Action<? super ComponentSelection> selectionAction);
 
@@ -109,8 +117,9 @@ public interface ComponentSelectionRules {
      * @param id the module to apply this rule to in "group:module" format or as a {@link org.gradle.api.artifacts.ModuleIdentifier}
      * @param closure the Closure that implements a rule to be applied
      * @return this
+     * @since 2.2
      */
-    ComponentSelectionRules withModule(Object id, Closure<?> closure);
+    ComponentSelectionRules withModule(Object id, @DelegatesTo(ComponentSelection.class) Closure<?> closure);
 
     /**
      * Adds a rule-source backed component selection rule that will apply to the specified module.
@@ -126,6 +135,9 @@ public interface ComponentSelectionRules {
      * @param id the module to apply this rule to in "group:module" format or as a {@link org.gradle.api.artifacts.ModuleIdentifier}
      * @param ruleSource an instance providing a rule implementation
      * @return this
+     * @deprecated use {@link #withModule(Object,Action)} instead.
+     * @since 2.2
      */
+    @Deprecated
     ComponentSelectionRules withModule(Object id, Object ruleSource);
 }

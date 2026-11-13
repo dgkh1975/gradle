@@ -16,49 +16,151 @@
 
 package gradlebuild.docs;
 
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
+import gradlebuild.basics.BuildEnvironmentKt;
 import gradlebuild.basics.PublicApi;
-import org.gradle.api.Action;
+import gradlebuild.basics.PublicKotlinDslApi;
+import org.asciidoctor.gradle.model5.core.AsciidoctorModelExtension;
+import org.asciidoctor.gradle.model5.jvm.JvmModel;
+import org.asciidoctor.gradle.model5.jvm.extensions.AsciidoctorjGenericExtension;
+import org.asciidoctor.gradle.model5.jvm.formatters.AsciidoctorjGenericOutputFormatter;
+import org.asciidoctor.gradle.model5.jvm.formatters.AsciidoctorjHtml5;
+import org.asciidoctor.gradle.model5.jvm.plugins.AsciidoctorjBasePlugin;
+import org.asciidoctor.gradle.model5.jvm.toolchains.AsciidoctorjToolchain;
 import org.gradle.api.Plugin;
 import org.gradle.api.Project;
-import org.gradle.api.Task;
 import org.gradle.api.artifacts.Configuration;
+import org.gradle.api.artifacts.VersionCatalog;
+import org.gradle.api.artifacts.VersionCatalogsExtension;
 import org.gradle.api.attributes.Category;
 import org.gradle.api.attributes.DocsType;
 import org.gradle.api.attributes.Usage;
 import org.gradle.api.file.ConfigurableFileTree;
 import org.gradle.api.file.ProjectLayout;
 import org.gradle.api.model.ObjectFactory;
+import org.gradle.api.plugins.JavaPluginExtension;
 import org.gradle.api.provider.ProviderFactory;
-import org.gradle.api.tasks.Exec;
 import org.gradle.api.tasks.PathSensitivity;
 import org.gradle.api.tasks.Sync;
 import org.gradle.api.tasks.TaskContainer;
 import org.gradle.api.tasks.TaskProvider;
 import org.gradle.api.tasks.testing.Test;
+import org.gradle.jvm.toolchain.JavaToolchainService;
+import org.gradle.process.CommandLineArgumentProvider;
 
+import javax.inject.Inject;
 import java.util.Collections;
+import java.util.List;
+import java.util.regex.Pattern;
 
-public class GradleBuildDocumentationPlugin implements Plugin<Project> {
+public abstract class GradleBuildDocumentationPlugin implements Plugin<Project> {
+
+    /**
+     * The AsciidoctorJ toolchain that renders Gradle's documentation.
+     */
+    public static final String ASCIIDOCTORJ_TOOLCHAIN = "asciidoctorj";
+
+    /**
+     * The HTML output formatter registered on {@link #ASCIIDOCTORJ_TOOLCHAIN}.
+     */
+    public static final String HTML_FORMATTER = "html";
+
+    /**
+     * The Markdown output formatter registered on {@link #ASCIIDOCTORJ_TOOLCHAIN}. Uses the {@code markdown} backend
+     * provided by {@code MarkdownConverter} in {@code :docs-asciidoctor-extensions-base}.
+     */
+    public static final String MARKDOWN_FORMATTER = "markdown";
+
+    /**
+     * Matches every Asciidoctor warning message: any warning fails the user manual. The plugin selects
+     * fatal warnings by pattern and has no "all warnings" switch, so matching everything is how that is
+     * expressed.
+     */
+    public static final Pattern ANY_WARNING = Pattern.compile(".*");
+
+    private static final String GRADLE_EXTENSIONS = "gradleDocs";
+
+    @Inject
+    protected abstract ProviderFactory getProviders();
+
     @Override
     public void apply(Project project) {
+        project.getPluginManager().apply("java");
         ProjectLayout layout = project.getLayout();
         TaskContainer tasks = project.getTasks();
         ObjectFactory objects = project.getObjects();
-        ProviderFactory providers = project.getProviders();
 
         GradleDocumentationExtension extension = project.getExtensions().create("gradleDocumentation", GradleDocumentationExtension.class);
         applyConventions(project, tasks, objects, layout, extension);
 
-        extension.getQuickFeedback().convention(providers.provider(() -> project.hasProperty("quickDocs")));
+        extension.getQuickFeedback().convention(getProviders().gradleProperty("quickDocs").map(x -> true).orElse(false));
+        extension.getGradleVersion().convention(project.provider(() -> project.getVersion().toString()));
+        extension.getGradleVersion8().convention(
+            getProviders().fileContents(BuildEnvironmentKt.releasedVersionsFile(project))
+                .getAsText()
+                .map(GradleBuildDocumentationPlugin::findLatestGradle8Version)
+        );
+
+        // The user manual plugin renders through this toolchain
+        configureAsciidoctorJ(project);
 
         project.apply(target -> target.plugin(GradleReleaseNotesPlugin.class));
         project.apply(target -> target.plugin(GradleJavadocsPlugin.class));
+        project.apply(target -> target.plugin(GradleKotlinDslReferencePlugin.class));
         project.apply(target -> target.plugin(GradleDslReferencePlugin.class));
         project.apply(target -> target.plugin(GradleUserManualPlugin.class));
 
-        addUtilityTasks(tasks, extension);
+        addUtilityTasks(project, tasks, extension);
 
         checkDocumentation(tasks, extension);
+    }
+
+    private static String findLatestGradle8Version(String releasedVersionsJson) {
+        JsonObject root = JsonParser.parseString(releasedVersionsJson).getAsJsonObject();
+        for (var element : root.getAsJsonArray("finalReleases")) {
+            String version = element.getAsJsonObject().get("version").getAsString();
+            if (version.startsWith("8.")) {
+                return version;
+            }
+        }
+        throw new IllegalStateException("No 8.x release found in released-versions.json");
+    }
+
+    /**
+     * Sets up the AsciidoctorJ toolchain ({@link #ASCIIDOCTORJ_TOOLCHAIN}) of the Asciidoctor Gradle plugin's model5 DSL,
+     * with Gradle's own Asciidoctor extensions and an HTML output formatter ({@link #HTML_FORMATTER}).
+     */
+    private static void configureAsciidoctorJ(Project project) {
+        project.getPluginManager().apply(AsciidoctorjBasePlugin.class);
+        VersionCatalog buildLibs = project.getExtensions().getByType(VersionCatalogsExtension.class).named("buildLibs");
+        AsciidoctorModelExtension asciidoc = project.getExtensions().getByType(AsciidoctorModelExtension.class);
+
+        AsciidoctorjToolchain toolchain = asciidoc.getToolchains().create(ASCIIDOCTORJ_TOOLCHAIN, AsciidoctorjToolchain.class);
+        toolchain.useAsciidoctorj(buildLibs.findVersion("asciidoctor").get().getRequiredVersion());
+        // head.html, header.html and footer.html, read from the classpath by HeaderInjectingPostprocessor
+        toolchain.classpath(project.files("src/main/resources"));
+
+        // Render in a worker process, as the classic plugin did with ExecutionMode.OUT_OF_PROCESS
+        toolchain.getRegisteredOutputFormatters().register(HTML_FORMATTER, AsciidoctorjHtml5.class,
+            html -> html.useProcessIsolation(forkOptions -> { }));
+        toolchain.getRegisteredOutputFormatters().register(MARKDOWN_FORMATTER, AsciidoctorjGenericOutputFormatter.class, markdown -> {
+            markdown.setBackend(MARKDOWN_FORMATTER);
+            markdown.useProcessIsolation(forkOptions -> { });
+        });
+
+        toolchain.getAsciidocExtensions().register(GRADLE_EXTENSIONS, AsciidoctorjGenericExtension.class, extension -> {
+            // Added lazily, so that applying this plugin doesn't require the project to exist, e.g. in build-logic tests
+            project.getConfigurations()
+                .getByName(JvmModel.nameForExtensionConfiguration(ASCIIDOCTORJ_TOOLCHAIN, GRADLE_EXTENSIONS))
+                .getDependencies()
+                .addLater(project.provider(() -> project.getDependencies().project(Collections.singletonMap("path", ":docs-asciidoctor-extensions"))));
+            // The extensions declare an API dependency on AsciidoctorJ. model5 resolves extensions separately from the
+            // engine, so keep AsciidoctorJ and JRuby coming only from the toolchain to avoid two versions on the classpath.
+            project.getConfigurations()
+                .getByName(JvmModel.nameForExtensionConfigurationResolvable(ASCIIDOCTORJ_TOOLCHAIN, GRADLE_EXTENSIONS))
+                .exclude(Collections.singletonMap("group", "org.asciidoctor"));
+        });
     }
 
     private void applyConventions(Project project, TaskContainer tasks, ObjectFactory objects, ProjectLayout layout, GradleDocumentationExtension extension) {
@@ -67,11 +169,17 @@ public class GradleBuildDocumentationPlugin implements Plugin<Project> {
             // release notes goes in the root of the docs
             task.from(extension.getReleaseNotes().getRenderedDocumentation());
 
+            // release notes assets go into $root/$assetsName/
+            task.from(extension.getReleaseNotes().getReleaseNotesAssets(), sub -> sub.into(extension.getReleaseNotes().getReleaseNotesAssets().map(dir -> dir.getAsFile().getName())));
+
             // DSL reference goes into dsl/
             task.from(extension.getDslReference().getRenderedDocumentation(), sub -> sub.into("dsl"));
 
             // Javadocs reference goes into javadoc/
             task.from(extension.getJavadocs().getRenderedDocumentation(), sub -> sub.into("javadoc"));
+
+            // Dokka Kotlin DSL reference goes into kotlin-dsl/
+            task.from(extension.getKotlinDslReference().getRenderedDocumentation(), sub -> sub.into("kotlin-dsl"));
 
             // User manual goes into userguide/ (for historical reasons)
             task.from(extension.getUserManual().getRenderedDocumentation(), sub -> sub.into("userguide"));
@@ -93,42 +201,42 @@ public class GradleBuildDocumentationPlugin implements Plugin<Project> {
         Configuration runtimeClasspath = project.getConfigurations().getByName("runtimeClasspath");
         Configuration sourcesPath = project.getConfigurations().create("sourcesPath");
         sourcesPath.attributes(a -> {
-            a.attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.class, Usage.JAVA_RUNTIME));
-            a.attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.class, Category.DOCUMENTATION));
-            a.attribute(DocsType.DOCS_TYPE_ATTRIBUTE, objects.named(DocsType.class, "gradle-source-folders"));
+            a.attribute(Usage.USAGE_ATTRIBUTE, a.named(Usage.class, Usage.JAVA_RUNTIME));
+            a.attribute(Category.CATEGORY_ATTRIBUTE, a.named(Category.class, Category.DOCUMENTATION));
+            a.attribute(DocsType.DOCS_TYPE_ATTRIBUTE, a.named(DocsType.class, "gradle-source-folders"));
         });
         sourcesPath.setCanBeConsumed(false);
         sourcesPath.setCanBeResolved(true);
-        sourcesPath.setVisible(false);
         sourcesPath.extendsFrom(runtimeClasspath);
 
         extension.getClasspath().from(runtimeClasspath);
+        extension.getSourceRoots().from(sourcesPath.getIncoming().artifactView(v -> v.lenient(true)).getFiles());
         extension.getDocumentedSource().from(sourcesPath.getIncoming().artifactView(v -> v.lenient(true)).getFiles().getAsFileTree().matching(f -> {
-            // Filter out any non-public APIs
             f.include(PublicApi.INSTANCE.getIncludes());
+            // Filter out any non-public APIs
             f.exclude(PublicApi.INSTANCE.getExcludes());
+        }));
+        extension.getKotlinDslSource().from(sourcesPath.getIncoming().artifactView(v -> v.lenient(true)).getFiles().getAsFileTree().matching(f -> {
+            f.include(PublicKotlinDslApi.INSTANCE.getIncludes());
+            // Filter out any non-public APIs
+            f.exclude(PublicKotlinDslApi.INSTANCE.getExcludes());
         }));
     }
 
-    private void addUtilityTasks(TaskContainer tasks, GradleDocumentationExtension extension) {
-        tasks.register("serveDocs", Exec.class, task -> {
+    private void addUtilityTasks(Project project, TaskContainer tasks, GradleDocumentationExtension extension) {
+        JavaToolchainService javaToolchains = project.getExtensions().getByType(JavaToolchainService.class);
+        JavaPluginExtension javaPluginExtension = project.getExtensions().getByType(JavaPluginExtension.class);
+
+        tasks.register("serveDocs", ServeDocs.class, task -> {
             task.setDescription("Runs a local webserver to serve generated documentation.");
             task.setGroup("documentation");
 
             int webserverPort = 8000;
-            task.workingDir(extension.getDocumentationRenderedRoot());
-            task.executable("python");
-            task.args("-m", "SimpleHTTPServer", webserverPort);
+            task.getDocsDirectory().convention(extension.getDocumentationRenderedRoot());
+            task.getPort().convention(webserverPort);
+            task.getJavaLauncher().convention(javaToolchains.launcherFor(javaPluginExtension.getToolchain()));
 
             task.dependsOn(extension.getRenderedDocumentation());
-
-            //noinspection Convert2Lambda
-            task.doFirst(new Action<Task>() {
-                @Override
-                public void execute(Task task) {
-                    task.getLogger().lifecycle("ctrl+C to restart, serving Gradle docs at http://localhost:" + webserverPort);
-                }
-            });
         });
 
         tasks.register("docs", task -> {
@@ -143,8 +251,9 @@ public class GradleBuildDocumentationPlugin implements Plugin<Project> {
             task.getInputs().file(extension.getReleaseNotes().getRenderedDocumentation()).withPropertyName("releaseNotes").withPathSensitivity(PathSensitivity.NONE);
 
             task.getInputs().property("systemProperties", Collections.emptyMap());
-            // TODO: This breaks the provider
-            task.systemProperty("org.gradle.docs.releasenotes.rendered", extension.getReleaseNotes().getRenderedDocumentation().get().getAsFile());
+            task.getJvmArgumentProviders().add((CommandLineArgumentProvider) () -> List.of(
+                "-Dorg.gradle.docs.releasenotes.rendered=" + extension.getReleaseNotes().getRenderedDocumentation().get().getAsFile()
+            ));
         });
     }
 }

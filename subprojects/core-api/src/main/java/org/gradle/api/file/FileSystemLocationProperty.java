@@ -18,8 +18,10 @@ package org.gradle.api.file;
 
 import org.gradle.api.provider.Property;
 import org.gradle.api.provider.Provider;
+import org.gradle.declarative.dsl.model.annotations.HiddenInDefinition;
+import org.gradle.internal.HasInternalProtocol;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.io.File;
 
 /**
@@ -31,15 +33,19 @@ import java.io.File;
  * @param <T> The type of location.
  * @since 5.6
  */
+@HasInternalProtocol
+@HiddenInDefinition
 public interface FileSystemLocationProperty<T extends FileSystemLocation> extends Property<T> {
     /**
      * Views the location of this file as a {@link File}.
+     * @since 5.6
      */
     Provider<File> getAsFile();
 
     /**
      * Sets the location of this file, using a {@link File} instance. {@link File} instances with relative paths are resolved relative to the project directory of the project
      * that owns this property instance.
+     * @since 5.6
      */
     void set(@Nullable File file);
 

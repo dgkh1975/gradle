@@ -17,8 +17,10 @@
 package org.gradle.api.internal.artifacts.publish;
 
 import org.gradle.api.artifacts.ConfigurablePublishArtifact;
-import org.gradle.api.internal.tasks.TaskResolver;
+import org.gradle.api.internal.tasks.DefaultTaskDependencyFactory;
+import org.gradle.api.internal.tasks.TaskDependencyFactory;
 
+import javax.inject.Inject;
 import java.io.File;
 import java.util.Date;
 
@@ -30,10 +32,27 @@ public class DefaultPublishArtifact extends AbstractPublishArtifact implements C
     private Date date;
     private File file;
 
-    public DefaultPublishArtifact(TaskResolver resolver,
-                                  String name, String extension, String type,
-                                  String classifier, Date date, File file, Object... tasks) {
-        super(resolver, tasks);
+    /**
+     * Create a publish artifact with nothing set
+     *
+     * @param taskDependencyFactory factory to create task dependencies
+     */
+    @Inject
+    public DefaultPublishArtifact(TaskDependencyFactory taskDependencyFactory) {
+        super(taskDependencyFactory);
+        this.name = null;
+        this.extension = null;
+        this.type = null;
+        this.date = null;
+        this.classifier = null;
+        this.file = null;
+    }
+
+    public DefaultPublishArtifact(
+        TaskDependencyFactory taskDependencyFactory,
+        String name, String extension, String type,
+        String classifier, Date date, File file, Object... tasks) {
+        super(taskDependencyFactory, tasks);
         this.name = name;
         this.extension = extension;
         this.type = type;
@@ -44,7 +63,7 @@ public class DefaultPublishArtifact extends AbstractPublishArtifact implements C
 
     public DefaultPublishArtifact(String name, String extension, String type,
                                   String classifier, Date date, File file, Object... tasks) {
-        super(tasks);
+        super(DefaultTaskDependencyFactory.withNoAssociatedProject(), tasks);
         this.name = name;
         this.extension = extension;
         this.type = type;

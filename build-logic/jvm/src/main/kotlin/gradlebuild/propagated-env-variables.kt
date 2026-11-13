@@ -17,6 +17,7 @@
 package gradlebuild
 
 import org.gradle.api.tasks.testing.Test
+import org.gradle.internal.os.OperatingSystem
 
 
 val propagatedEnvironmentVariables = listOf(
@@ -45,6 +46,9 @@ val propagatedEnvironmentVariables = listOf(
 
     // Used by Gradle test infrastructure
     "REPO_MIRROR_URLS",
+    "YARNPKG_MIRROR_URL",
+    // Optional mirror for services.gradle.org layout in internal tests (ReleasedGradleDistribution)
+    "GRADLE_INTERNAL_TEST_SERVICES_BASE_URL",
 
     // Used to find local java installations
     "SDKMAN_CANDIDATES_DIR",
@@ -61,7 +65,36 @@ val propagatedEnvironmentVariables = listOf(
 
     // Used by performance test to recognize TeamCity buildId
     "BUILD_ID",
-    "JPROFILER_HOME"
+    // Used by some tests to be ignored in specific build
+    "BUILD_TYPE_ID",
+    "JPROFILER_HOME",
+
+    // Used by mirror init script, see RepoScriptBlockUtil
+    "IGNORE_MIRROR",
+
+    "LANG",
+    "LANGUAGE",
+    // It is possible to have many LC_xxx variables for different aspects of the locale. However, LC_ALL overrides all of them, and it is what CI uses.
+    "LC_ALL",
+    "LC_CTYPE",
+
+    "JDK8",
+    "JDK11",
+    "JDK17",
+
+    "JDK_HOME",
+    "JRE_HOME",
+    "CommonProgramFiles",
+    "CommonProgramFiles(x86)",
+    "CommonProgramW6432",
+    "ProgramData",
+    "ProgramFiles",
+    "ProgramFiles(x86)",
+    // Simply putting PATH there isn't enough. Windows has case-insensitive env vars but something else fails if the Path variable is published as PATH for test tasks.
+    OperatingSystem.current().pathVar,
+    "PATHEXT",
+    // Used by KotlinMultiplatformPluginSmokeTest, see https://github.com/gradle/gradle-private/issues/4223
+    "CHROME_BIN"
 )
 
 
@@ -77,32 +110,28 @@ val credentialsKeywords = listOf(
 )
 
 
-fun Test.filterEnvironmentVariables() {
-    environment = System.getenv().entries.mapNotNull(::sanitize).toMap()
+fun Test.filterEnvironmentVariables(inheritedEnvVars: List<String>) {
+    environment = makePropagatedEnvironment()
     environment.forEach { (key, _) ->
-        if (credentialsKeywords.any { key.contains(it, true) }) {
-            throw IllegalArgumentException("Found sensitive data in filtered environment variables: $key")
+        require(credentialsKeywords.none { key.contains(it, true) }) { "Found sensitive data in filtered environment variables: $key" }
+    }
+
+    inheritedEnvVars.forEach { envVar ->
+        System.getenv(envVar)?.let {
+            environment[envVar] = it
         }
     }
 }
 
 
 private
-fun sanitize(entry: MutableMap.MutableEntry<String, String>): Pair<String, String>? {
-    return when {
-        entry.key in propagatedEnvironmentVariables -> entry.key to entry.value
-        entry.key.startsWith("LC_") -> entry.key to entry.value
-        entry.key.startsWith("LANG") -> entry.key to entry.value
-        entry.key.startsWith("JDK_") -> entry.key to entry.value
-        entry.key.startsWith("JRE_") -> entry.key to entry.value
-
-        // Visual Studio installation info
-        entry.key.startsWith("VS") -> entry.key to entry.value
-        entry.key.startsWith("CommonProgram") -> entry.key to entry.value
-        entry.key.startsWith("ProgramFiles") -> entry.key to entry.value
-        entry.key.startsWith("ProgramData") -> entry.key to entry.value
-
-        entry.key.equals("Path", true) -> entry.key to entry.value
-        else -> null
+fun makePropagatedEnvironment(): MutableMap<String, String> {
+    val result = HashMap<String, String>()
+    for (key in propagatedEnvironmentVariables) {
+        val value = System.getenv(key)
+        if (value != null) {
+            result[key] = value
+        }
     }
+    return result
 }

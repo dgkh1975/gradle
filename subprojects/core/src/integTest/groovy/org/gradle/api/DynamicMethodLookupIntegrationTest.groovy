@@ -17,6 +17,8 @@
 package org.gradle.api
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 import spock.lang.Issue
 
 class DynamicMethodLookupIntegrationTest extends AbstractIntegrationSpec {
@@ -79,29 +81,13 @@ assert contacts("a") == "a"
         succeeds()
     }
 
-    // Documents actual behaviour for backwards compatibility, not necessarily desired behaviour
-    def "inherited convention method is preferred over property with closure value"() {
-        given:
-        settingsFile << "include 'child'"
-        buildFile """
-class ContactConvention {
-    def contacts(String arg) { arg }
-}
-
-convention.plugins.contacts = new ContactConvention()
-
-subprojects {
-    ext.contacts = { throw new RuntimeException() }
-    assert contacts("a") == "a"
-}
-"""
-
-        expect:
-        succeeds()
-    }
-
+    @Requires(
+        value = TestExecutionPreconditions.NotIsolatedProjects,
+        reason = "Exercises IP incompatible behavior: Groovy method inheritance"
+    )
     def "property with closure value is preferred over inherited property with closure value"() {
         given:
+        createDirs("child")
         settingsFile << "include 'child'"
         buildFile """
 ext.contacts = { throw new RuntimeException() }

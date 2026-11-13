@@ -1,5 +1,5 @@
 /*
- * Copyright 2016 the original author or authors.
+ * Copyright 2023 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,11 +15,11 @@
  */
 
 /**
- * Classes for build caches.
+ * Classes for build caches and for types to extend build cache functionality.
  *
  * @since 3.3
  */
-@NonNullApi
+@NullMarked
 package org.gradle.caching;
 
-import org.gradle.api.NonNullApi;
+import org.jspecify.annotations.NullMarked;

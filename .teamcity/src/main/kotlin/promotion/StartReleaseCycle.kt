@@ -17,20 +17,41 @@
 package promotion
 
 import common.gradleWrapper
-import jetbrains.buildServer.configs.kotlin.v2019_2.ParameterDisplay
-import jetbrains.buildServer.configs.kotlin.v2019_2.RelativeId
-import vcsroots.gradlePromotionMaster
+import common.promotionBuildParameters
+import jetbrains.buildServer.configs.kotlin.ParameterDisplay
+import jetbrains.buildServer.configs.kotlin.RelativeId
 
-object StartReleaseCycle : BasePromotionBuildType(vcsRootId = gradlePromotionMaster) {
+object StartReleaseCycle : BasePromotionBuildType() {
     init {
         id("Promotion_StartReleaseCycle")
         name = "Start Release Cycle"
         description = "Promotes a successful build on master as the start of a new release cycle on the release branch"
 
         params {
-            text("gitUserEmail", "", label = "Git user.email Configuration", description = "Enter the git 'user.email' configuration to commit change under", display = ParameterDisplay.PROMPT, allowEmpty = true)
-            text("confirmationCode", "", label = "Confirmation Code", description = "Enter the value 'startCycle' (no quotes) to confirm the promotion", display = ParameterDisplay.PROMPT, allowEmpty = false)
-            text("gitUserName", "", label = "Git user.name Configuration", description = "Enter the git 'user.name' configuration to commit change under", display = ParameterDisplay.PROMPT, allowEmpty = true)
+            text(
+                "gitUserEmail",
+                "",
+                label = "Git user.email Configuration",
+                description = "Enter the git 'user.email' configuration to commit change under",
+                display = ParameterDisplay.PROMPT,
+                allowEmpty = true,
+            )
+            text(
+                "confirmationCode",
+                "",
+                label = "Confirmation Code",
+                description = "Enter the value 'startCycle' (no quotes) to confirm the promotion",
+                display = ParameterDisplay.PROMPT,
+                allowEmpty = false,
+            )
+            text(
+                "gitUserName",
+                "",
+                label = "Git user.name Configuration",
+                description = "Enter the git 'user.name' configuration to commit change under",
+                display = ParameterDisplay.PROMPT,
+                allowEmpty = true,
+            )
         }
 
         steps {
@@ -38,8 +59,13 @@ object StartReleaseCycle : BasePromotionBuildType(vcsRootId = gradlePromotionMas
                 name = "Promote"
                 tasks = "clean promoteStartReleaseCycle"
                 useGradleWrapper = true
-                gradleParams = """-PcommitId=%dep.${RelativeId("Check_Stage_ReadyforNightly_Trigger")}.build.vcs.number% -PconfirmationCode=%confirmationCode% "-PgitUserName=%gitUserName%" "-PgitUserEmail=%gitUserEmail%" """
-                param("org.jfrog.artifactory.selectedDeployableServer.defaultModuleVersionConfiguration", "GLOBAL")
+                gradleParams =
+                    promotionBuildParameters(
+                        RelativeId("Check_Stage_ReadyforNightly_Trigger"),
+                        "-PconfirmationCode=%confirmationCode%",
+                        "%gitUserName%",
+                        "%gitUserEmail%",
+                    )
             }
         }
 

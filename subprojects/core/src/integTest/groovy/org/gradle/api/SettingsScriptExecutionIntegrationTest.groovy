@@ -20,15 +20,9 @@ import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import org.gradle.integtests.fixtures.executer.ArtifactBuilder
 import org.gradle.internal.os.OperatingSystem
 import org.gradle.test.fixtures.file.TestFile
-import spock.lang.IgnoreIf
 import spock.lang.Issue
-import spock.lang.Unroll
 
-@Issue("https://github.com/gradle/gradle-private/issues/3247")
-@IgnoreIf({ OperatingSystem.current().macOsX && JavaVersion.current() == JavaVersion.VERSION_1_8})
 class SettingsScriptExecutionIntegrationTest extends AbstractIntegrationSpec {
-
-    @Unroll
     def "emits deprecation warnings when enabling inactive #feature feature"() {
         given:
         settingsFile << """
@@ -36,9 +30,9 @@ class SettingsScriptExecutionIntegrationTest extends AbstractIntegrationSpec {
         """
 
         when:
-        executer.expectDocumentedDeprecationWarning("enableFeaturePreview('$feature') has been deprecated. This is scheduled to be removed in Gradle 8.0. " +
-            "The feature flag is no longer relevant, please remove it from your settings file. " +
-            "See https://docs.gradle.org/current/userguide/feature_lifecycle.html#feature_preview for more details.")
+        executer.expectDocumentedDeprecationWarning("enableFeaturePreview('$feature') has been deprecated. This is scheduled to be removed in Gradle 10. " +
+                "The feature flag is no longer relevant, please remove it from your settings file. " +
+                "For more information, please refer to https://docs.gradle.org/current/userguide/feature_lifecycle.html#feature_preview in the Gradle documentation.")
 
         then:
         succeeds()
@@ -74,15 +68,17 @@ class SettingsScriptExecutionIntegrationTest extends AbstractIntegrationSpec {
         """
         if (OperatingSystem.current().windows) {
             scriptFile << """
-                exec {
-                    commandLine "cmd", "/c", "type", "message"
-                }
+                def message = providers.exec {
+                    commandLine "cmd.exe", "/d", "/c", "type", "message"
+                }.standardOutput.asText.get()
+                print message
             """
         } else {
             scriptFile << """
-                exec {
+                def message = providers.exec {
                     commandLine "cat", "message"
-                }
+                }.standardOutput.asText.get()
+                print message
             """
         }
     }

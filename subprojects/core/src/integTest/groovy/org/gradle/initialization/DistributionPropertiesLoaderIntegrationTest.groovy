@@ -17,16 +17,14 @@
 package org.gradle.initialization
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
-import org.gradle.integtests.fixtures.executer.GradleContextualExecuter
-import spock.lang.IgnoreIf
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 import spock.lang.Issue
 
 class DistributionPropertiesLoaderIntegrationTest extends AbstractIntegrationSpec {
 
     @Issue('https://github.com/gradle/gradle/issues/11173')
-    @ToBeFixedForConfigurationCache(because = "undeclared system properties")
-    @IgnoreIf({ GradleContextualExecuter.embedded })
+    @Requires(TestExecutionPreconditions.NotEmbeddedExecutor)
     def "System properties defined in gradle.properties are available in buildSrc and in included builds"() {
         given:
         settingsFile << '''

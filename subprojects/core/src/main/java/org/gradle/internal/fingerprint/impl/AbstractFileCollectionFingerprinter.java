@@ -16,41 +16,30 @@
 
 package org.gradle.internal.fingerprint.impl;
 
-import org.gradle.api.NonNullApi;
 import org.gradle.api.file.FileCollection;
-import org.gradle.internal.execution.fingerprint.FileCollectionFingerprinter;
-import org.gradle.internal.execution.fingerprint.FileCollectionSnapshotter;
+import org.gradle.internal.execution.FileCollectionFingerprinter;
 import org.gradle.internal.fingerprint.CurrentFileCollectionFingerprint;
 import org.gradle.internal.fingerprint.FileCollectionFingerprint;
 import org.gradle.internal.fingerprint.FingerprintingStrategy;
-import org.gradle.internal.snapshot.FileSystemLocationSnapshot;
 import org.gradle.internal.snapshot.FileSystemSnapshot;
-
-import javax.annotation.Nullable;
+import org.jspecify.annotations.NullMarked;
+import org.jspecify.annotations.Nullable;
 
 /**
  * Responsible for calculating a {@link FileCollectionFingerprint} for a particular {@link FileCollection}.
  */
-@NonNullApi
+@NullMarked
 public abstract class AbstractFileCollectionFingerprinter implements FileCollectionFingerprinter {
 
-    private final FileCollectionSnapshotter fileCollectionSnapshotter;
     private final FingerprintingStrategy fingerprintingStrategy;
 
-    public AbstractFileCollectionFingerprinter(FingerprintingStrategy fingerprintingStrategy, FileCollectionSnapshotter fileCollectionSnapshotter) {
+    public AbstractFileCollectionFingerprinter(FingerprintingStrategy fingerprintingStrategy) {
         this.fingerprintingStrategy = fingerprintingStrategy;
-        this.fileCollectionSnapshotter = fileCollectionSnapshotter;
     }
 
     @Override
-    public CurrentFileCollectionFingerprint fingerprint(FileCollection files, @Nullable FileCollectionFingerprint previousFingerprint) {
-        FileSystemSnapshot roots = fileCollectionSnapshotter.snapshot(files);
-        return DefaultCurrentFileCollectionFingerprint.from(roots, fingerprintingStrategy, previousFingerprint);
-    }
-
-    @Override
-    public String normalizePath(FileSystemLocationSnapshot root) {
-        return fingerprintingStrategy.normalizePath(root);
+    public CurrentFileCollectionFingerprint fingerprint(FileSystemSnapshot snapshot, @Nullable FileCollectionFingerprint previousFingerprint) {
+        return DefaultCurrentFileCollectionFingerprint.from(snapshot, fingerprintingStrategy, previousFingerprint);
     }
 
     @Override

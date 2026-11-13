@@ -17,10 +17,10 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.integtests.fixtures.UnsupportedWithConfigurationCache
+import org.gradle.integtests.fixtures.modes.UnsupportedWithConfigurationCache
 
 
-@UnsupportedWithConfigurationCache
+@UnsupportedWithConfigurationCache(because = "uses task event listener")
 class TaskEventsErrorIntegrationTest extends AbstractIntegrationSpec {
     def "reports task as failed when beforeTask closure fails"() {
         when:
@@ -32,7 +32,7 @@ class TaskEventsErrorIntegrationTest extends AbstractIntegrationSpec {
 """
         then:
         fails('test')
-        failure.assertHasDescription("Execution failed for task ':test'.")
+        failure.assertHasDescription("Execution failed for task ':test' (registered in build file 'build.gradle').")
                 .assertHasCause("beforeTask failure")
                 .assertHasFileName("Build file '${buildFile}'")
                 .assertHasLineNumber(3)
@@ -48,7 +48,7 @@ class TaskEventsErrorIntegrationTest extends AbstractIntegrationSpec {
 """
         then:
         fails('test')
-        failure.assertHasDescription("Execution failed for task ':test'.")
+        failure.assertHasDescription("Execution failed for task ':test' (registered in build file 'build.gradle').")
                 .assertHasCause("afterTask failure")
                 .assertHasFileName("Build file '${buildFile}'")
                 .assertHasLineNumber(3)
@@ -71,6 +71,7 @@ class TaskEventsErrorIntegrationTest extends AbstractIntegrationSpec {
     }
 """
         then:
+        executer.withArgument("--no-problems-report")
         fails('test')
         result.groupedOutput.task(":test").output == """beforeTask action
 task action
@@ -91,7 +92,7 @@ afterTask action"""
 """
         then:
         fails('test')
-        failure.assertHasDescription("Execution failed for task ':test'.")
+        failure.assertHasDescription("Execution failed for task ':test' (registered in build file 'build.gradle').")
                 .assertHasCause("afterTask failure")
                 .assertHasCause("task action failure")
                 .assertHasFileName("Build file '${buildFile}'")

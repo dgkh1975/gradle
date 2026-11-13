@@ -1,5 +1,5 @@
 /*
- * Copyright 2020 the original author or authors.
+ * Copyright 2024 the original author or authors.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,42 @@
  * limitations under the License.
  */
 
-rootProject.name = "build-logic-settings"
-
 dependencyResolutionManagement {
     repositories {
+        mavenCentral()
+        gradlePluginPortal()
+    }
+    versionCatalogs {
+        create("buildLibs") {
+            from(files("../gradle/dependency-management/build.versions.toml"))
+            version("errorProne", "stub") // not used in this project
+        }
+    }
+}
+
+pluginManagement {
+    repositories {
+        maven {
+            url = uri("https://repo.gradle.org/gradle/enterprise-libs-release-candidates")
+            content {
+                val rcAndMilestonesPattern = "\\d{1,2}?\\.\\d{1,2}?(\\.\\d{1,2}?)?-((rc-\\d{1,2}?)|(milestone-\\d{1,2}?))"
+                // GE plugin marker artifact
+                includeVersionByRegex("com.gradle.develocity", "com.gradle.develocity.gradle.plugin", rcAndMilestonesPattern)
+                // GE plugin jar
+                includeVersionByRegex("com.gradle", "develocity-gradle-plugin", rcAndMilestonesPattern)
+            }
+        }
+
         gradlePluginPortal()
     }
 }
 
-include("allprojects-plugin")
-include("testfiltering-plugin")
-include("cc-experiment-plugin")
+apply(from = "../gradle/shared-with-buildSrc/mirrors.settings.gradle.kts")
 
+include("architecture-docs")
+include("build-environment")
+include("configuration-cache-compatibility")
+include("default-settings-plugins")
+include("version-catalogs")
+
+rootProject.name = "build-logic-settings"

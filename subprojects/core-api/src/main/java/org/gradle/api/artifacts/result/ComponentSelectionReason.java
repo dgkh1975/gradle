@@ -24,7 +24,7 @@ import java.util.List;
 /**
  * Answers the question why a component was selected during the dependency resolution.
  *
- * @since 1.3
+ * @since 1.10
  */
 @UsedByScanPlugin
 @HasInternalProtocol
@@ -33,12 +33,14 @@ public interface ComponentSelectionReason {
     /**
      * Informs whether the component was forced. Users can force components via {@link org.gradle.api.artifacts.ResolutionStrategy} or when declaring dependencies (see {@link
      * org.gradle.api.artifacts.dsl.DependencyHandler}).
+     * @since 1.10
      */
     boolean isForced();
 
     /**
      * Informs whether the component was selected by conflict resolution. For more information about Gradle's conflict resolution please refer to the user manual. {@link
      * org.gradle.api.artifacts.ResolutionStrategy} contains information about conflict resolution and includes means to configure it.
+     * @since 1.10
      */
     boolean isConflictResolution();
 
@@ -46,7 +48,7 @@ public interface ComponentSelectionReason {
      * Informs whether the component was selected by the dependency substitution rule. Users can configure dependency substitution rules via {@link
      * org.gradle.api.artifacts.ResolutionStrategy#getDependencySubstitution()}
      *
-     * @since 1.4
+     * @since 1.10
      */
     boolean isSelectedByRule();
 
@@ -58,7 +60,7 @@ public interface ComponentSelectionReason {
     boolean isExpected();
 
     /**
-     * Informs whether the selected component is a project substitute from a build participating in in a composite build.
+     * Informs whether the selected component is a project substitute from a build participating in a composite build.
      *
      * @since 4.5
      */
@@ -80,5 +82,5 @@ public interface ComponentSelectionReason {
      *
      * @since 4.6
      */
-    List<ComponentSelectionDescriptor> getDescriptions();
+    List<? extends ComponentSelectionDescriptor> getDescriptions();
 }

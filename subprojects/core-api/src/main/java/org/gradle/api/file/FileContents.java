@@ -43,10 +43,8 @@ public interface FileContents {
      *     {@link Provider#get}, {@link Provider#getOrElse}, {@link Provider#getOrNull} and {@link Provider#isPresent}.
      * </p>
      *
-     * The returned provider cannot be queried at configuration time but can produce a configuration time provider
-     * via {@link Provider#forUseAtConfigurationTime()}.
-     *
      * @return provider of the entire file contents as a single String.
+     * @since 6.1
      */
     Provider<String> getAsText();
 
@@ -68,10 +66,8 @@ public interface FileContents {
      *     {@link Provider#get}, {@link Provider#getOrElse}, {@link Provider#getOrNull} and {@link Provider#isPresent}.
      * </p>
      *
-     * The returned provider cannot be queried at configuration time but can produce a configuration time provider
-     * via {@link Provider#forUseAtConfigurationTime()}.
-     *
      * @return provider of the entire file contents as a single byte array.
+     * @since 6.1
      */
     Provider<byte[]> getAsBytes();
 }

@@ -14,15 +14,23 @@
  * limitations under the License.
  */
 
-import gradlebuild.performance.generator.tasks.*
-import org.gradle.api.file.FileSystemOperations
+import gradlebuild.performance.generator.tasks.BuildBuilderGenerator
+import gradlebuild.performance.generator.tasks.CppMultiProjectGeneratorTask
+import gradlebuild.performance.generator.tasks.JavaExecProjectGeneratorTask
+import gradlebuild.performance.generator.tasks.JvmProjectGeneratorTask
+import gradlebuild.performance.generator.tasks.KtsProjectGeneratorTask
+import gradlebuild.performance.generator.tasks.MonolithicNativeProjectGeneratorTask
+import gradlebuild.performance.generator.tasks.NativeProjectGeneratorTask
+import gradlebuild.performance.generator.tasks.NativeProjectWithDepsGeneratorTask
+import gradlebuild.performance.generator.tasks.RemoteProject
 
 import static gradlebuild.basics.BuildEnvironmentKt.repoRoot
+import static gradlebuild.basics.BuildParamsKt.getBuildCommitId
 
 // === Gradle Build ===
 performanceTest.registerTestProject("gradleBuildCurrent", RemoteProject) {
     remoteUri = repoRoot(project).asFile.absolutePath
-    ref = moduleIdentity.gradleBuildCommitId
+    ref = getBuildCommitId(project)
 }
 
 performanceTest.registerTestProject("gradleBuildBaseline", RemoteProject) {
@@ -32,8 +40,9 @@ performanceTest.registerTestProject("gradleBuildBaseline", RemoteProject) {
     ref = '264bd7744d2e89b2708303cd56bb11bc5003fa7e'
 }
 
+
 // === Java ===
-['largeMonolithicJavaProject', 'largeJavaMultiProject', 'largeMonolithicGroovyProject', 'largeGroovyMultiProject', 'largeJavaMultiProjectNoBuildSrc', 'largeJavaMultiProjectKotlinDsl',
+['largeMonolithicJavaProject', 'largeJavaMultiProject', 'largeJavaMultiProjectDeprecations', 'smallJavaMultiProjectManyExternalDependencies', 'largeJavaMultiProjectHierarchy', 'largeMonolithicGroovyProject', 'largeGroovyMultiProject', 'largeJavaMultiProjectNoBuildSrc', 'largeJavaMultiProjectKotlinDsl',
  'mediumMonolithicJavaProject', 'mediumJavaMultiProject', 'mediumJavaMultiProjectWithTestNG', 'mediumJavaCompositeBuild', 'mediumJavaPredefinedCompositeBuild',
  'smallJavaMultiProject', 'smallJavaMultiProjectNoBuildSrc'].each { template ->
     performanceTest.registerTestProject(template, JavaExecProjectGeneratorTask) {
@@ -84,6 +93,11 @@ performanceTest.registerTestProject("generateLotsOfDeprecationWarnings", Copy) {
     from "src/templates/$name"
 }
 
+performanceTest.registerTestProject("generateDiverseDeprecationWarnings", Copy) {
+    into "build/$name"
+    from "src/templates/$name"
+}
+
 
 // === Gradle Kotlin DSL ===
 performanceTest.registerTestProject("ktsManyProjects", KtsProjectGeneratorTask) {
@@ -94,6 +108,23 @@ performanceTest.registerTestProject("ktsManyProjects", KtsProjectGeneratorTask) 
 
 performanceTest.registerTestProject("ktsSmall", KtsProjectGeneratorTask) {
     daemonMemory = '512m'
+}
+
+// A single Kotlin DSL project whose build script applies a plugin that creates a large number of
+// Java source sets. Each source set contributes several configurations, and each configuration
+// becomes its own generated type-safe accessor class, so a great number of accessor classes are
+// generated for this single project. The number of source sets is the size parameter.
+performanceTest.registerTestProject("kotlinDslManyAccessors", KtsProjectGeneratorTask) {
+    projects = 1
+    sourceFiles = 0
+    createTestComponent = false
+    subProjectTemplates = ['kts-many-accessors']
+    additionalProjectFiles = [
+        'buildSrc/src/main/java/org/gradle/performance/kotlindsl/ManySourceSetsPlugin.java',
+        'buildSrc/src/main/resources/META-INF/gradle-plugins/many-source-sets.properties',
+    ]
+    templateArgs = [sourceSetCount: 500]
+    daemonMemory = '1536m'
 }
 
 // === Native Software Model ===
@@ -334,9 +365,7 @@ performanceTest.registerTestProject("bigCppMulti", CppMultiProjectGeneratorTask)
 
 // Build-builder projects
 tasks.register("buildBuilder", RemoteProject) {
-    remoteUri = 'https://github.com/blindpirate/build-builder.git'
-    // From master branch
-    ref = '1afcdf45d8db281ec11272f6ec0e3aa1be717bd9'
+    setRemoteUriAndRefFromGradleProperty("buildBuilderProjectRef")
 }
 
 tasks.register("installBuildBuilder", GradleBuild) {
@@ -386,22 +415,39 @@ performanceTest.registerTestProject("bigSwiftApp", BuildBuilderGenerator) {
 }
 
 // === Android ===
-performanceTest.registerTestProject("largeAndroidBuild", RemoteProject) {
-    remoteUri = 'https://github.com/gradle/perf-android-large.git'
-    // From android-41 branch
-    ref = "b3964ffea18ef5d280b5b493c5c7b8d8b986056c"
+performanceTest.registerAndroidTestProject("largeAndroidBuild", ["-Xms8g", "-Xmx8g"], RemoteProject) {
+    setRemoteUriAndRefFromGradleProperty("largeAndroidBuildProjectRef")
 }
 
-performanceTest.registerTestProject("santaTrackerAndroidBuild", RemoteProject) {
-    remoteUri = 'https://github.com/gradle/santa-tracker-android.git'
-    // Pinned from main branch
-    ref = 'c26e2b8aa5c34758934009f1d5b0334f7fc2db5a'
+performanceTest.registerAndroidTestProject("largeAndroidBuild2", ["-Xms8g", "-Xmx8g"], RemoteProject) {
+    setRemoteUriAndRefFromGradleProperty("largeAndroidBuild2ProjectRef")
+}
+
+performanceTest.registerAndroidTestProject("nowInAndroidBuild", ["-Xms4g", "-Xmx4g"], RemoteProject) {
+    setRemoteUriAndRefFromGradleProperty("nowInAndroidBuildProjectRef")
     doLast {
-        addGoogleServicesJson(outputDirectory)
+        setMaxWorkers(outputDirectory, 8)
     }
 }
 
-performanceTest.registerTestProject("uberMobileApp", RemoteProject) {
+performanceTest.registerAndroidTestProject("android100Kts", ["-Xms4g", "-Xmx4g"], RemoteProject) {
+    setRemoteUriAndRefFromGradleProperty("isolatedProjectsTestbedRef")
+    subdirectory = 'android-100-kts'
+    doLast {
+        setMaxWorkers(outputDirectory, 8)
+    }
+}
+
+// When manually opening the project in Android Studio 2025.3, it recommends this max memory based on the project size
+performanceTest.registerAndroidTestProject("android500Kts", ["-Xms8g", "-Xmx8g"], RemoteProject) {
+    setRemoteUriAndRefFromGradleProperty("isolatedProjectsTestbedRef")
+    subdirectory = 'android-500-kts'
+    doLast {
+        setMaxWorkers(outputDirectory, 8)
+    }
+}
+
+performanceTest.registerAndroidTestProject("uberMobileApp", RemoteProject) {
     remoteUri = 'https://github.com/gradle/android-build-eval.git'
     subdirectory = 'mobile_app1'
     // Pinned from PR https://github.com/uber-common/android-build-eval/pull/17
@@ -435,107 +481,22 @@ private void setParallel(File projectDirectory, boolean parallel) {
 
 }
 
-private void addGoogleServicesJson(File outputDirectory) {
-    new File(outputDirectory, 'santa-tracker/google-services.json').text = """
-{
-  "project_info": {
-    "project_number": "012345678912",
-    "firebase_url": "https://example.com",
-    "project_id": "example",
-    "storage_bucket": "example.example.com"
-  },
-  "client": [
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:012345678912:android:0123456789abcdef",
-        "android_client_info": {
-          "package_name": "com.google.android.apps.santatracker.debug"
-        }
-      },
-      "oauth_client": [
-        {
-          "client_id": "foo.example.com",
-          "client_type": 3
-        }
-      ],
-      "api_key": [
-        {
-          "current_key": "012345678901234567890123456789012345678"
-        }
-      ],
-      "services": {
-        "analytics_service": {
-          "status": 1
-        },
-        "appinvite_service": {
-          "status": 1,
-          "other_platform_oauth_client": []
-        },
-        "ads_service": {
-          "status": 2
-        }
-      }
-    },
-    {
-      "client_info": {
-        "mobilesdk_app_id": "1:012345678912:android:0123456789abcdef",
-        "android_client_info": {
-          "package_name": "com.google.android.apps.santatracker.debug"
-        }
-      },
-      "oauth_client": [
-        {
-          "client_id": "foo.example.com",
-          "client_type": 3
-        }
-      ],
-      "api_key": [
-        {
-          "current_key": "012345678901234567890123456789012345678"
-        }
-      ],
-      "services": {
-        "analytics_service": {
-          "status": 1
-        },
-        "appinvite_service": {
-          "status": 1,
-          "other_platform_oauth_client": []
-        },
-        "ads_service": {
-          "status": 2
-        }
-      }
-    }
-  ],
-  "configuration_version": "1"
-}
-"""
-}
-
 performanceTest.registerTestProject("excludeRuleMergingBuild", RemoteProject) {
-    remoteUri = 'https://github.com/gradle/performance-comparisons.git'
-    // From master branch
-    ref = "aa321f693adc9af8962209c7c21bbb1d918650d2"
+    setRemoteUriAndRefFromGradleProperty("excludeRuleMergingBuildProjectRef")
     subdirectory = 'exclude-merging'
 }
 
 performanceTest.registerTestProject("springBootApp", RemoteProject) {
-    remoteUri = 'https://github.com/gradle/performance-comparisons.git'
-    // From master branch
-    ref = "f93d2e6d7057f4cdf379a817bdf036e85e97429a"
+    setRemoteUriAndRefFromGradleProperty("springBootAppProjectRef")
     subdirectory = 'parallel-downloads'
 }
 
 performanceTest.registerTestProject("largeNativeBuild", RemoteProject) {
-    remoteUri = 'https://github.com/gradle/perf-native-large'
-    // From master branch
-    ref = "af00fd258fbe9c7d274f386e46847fe12062cc71"
+    setRemoteUriAndRefFromGradleProperty("largeNativeBuildProjectRef")
     finalizedBy 'largeNativeBuildPrebuilt'
 }
 
 performanceTest.registerTestProject("largeNativeBuildPrebuilt", GradleBuild) {
-    buildFile = file("$largeNativeBuild.outputDirectory/prebuilt/util/build.gradle")
     dir = file("$largeNativeBuild.outputDirectory/prebuilt/util")
     tasks = ['build']
 }
@@ -551,8 +512,9 @@ performanceTest.registerTestProject("workerApiProject", Copy) {
 }
 
 tasks.withType(JvmProjectGeneratorTask).configureEach {
-    if (project.hasProperty("springDmPluginVersion")) {
-        templateArgs['springDmPluginVersion'] = springDmPluginVersion
+    def springDmPluginVersion = providers.gradleProperty("springDmPluginVersion")
+    if (springDmPluginVersion.isPresent()) {
+        templateArgs['springDmPluginVersion'] = springDmPluginVersion.get()
     }
     templateArgs['projectDependencies'] = true
 }

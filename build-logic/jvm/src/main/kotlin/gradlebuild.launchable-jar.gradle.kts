@@ -14,46 +14,40 @@
  * limitations under the License.
  */
 
-import gradlebuild.startscript.tasks.GradleStartScriptGenerator
+import gradlebuild.configureAsRuntimeJarClasspath
 
 plugins {
     java
 }
 
-val manifestClasspath by configurations.creating {
-    isCanBeResolved = true
-    isCanBeConsumed = false
-    isTransitive = false
+interface LaunchableJar {
+    /**
+     * The main class for the application. Can be undefined.
+     */
+    val mainClassName: Property<String>
+}
 
-    attributes {
-        attribute(Usage.USAGE_ATTRIBUTE, objects.named(Usage.JAVA_RUNTIME))
-        attribute(Category.CATEGORY_ATTRIBUTE, objects.named(Category.LIBRARY))
-        attribute(LibraryElements.LIBRARY_ELEMENTS_ATTRIBUTE, objects.named(LibraryElements.JAR))
-    }
+val app = extensions.create<LaunchableJar>("app")
+
+val manifestClasspath = configurations.dependencyScope("manifestClasspath")
+val resolveManifestClasspath = configurations.resolvable("resolveManifestClasspath") {
+    isTransitive = false
+    extendsFrom(manifestClasspath.get())
+    configureAsRuntimeJarClasspath(objects)
 }
 
 tasks.jar.configure {
-    val classpath = manifestClasspath.elements.map { classpathDependency ->
-        classpathDependency.joinToString(" ") {
-            it.asFile.name
-        }
+    val runtimeFiles = configurations.runtimeClasspath.flatMap { it.elements }
+    val manifestFiles = resolveManifestClasspath.flatMap { it.elements }
+    // By default, the full runtime classpath is written to the manifest. If a curated
+    // manifestClasspath is provided, it is used instead. Preferring the automatic runtime
+    // classpath is less error-prone than a hand-written list that must be manually kept in sync.
+    val classpath = manifestFiles.zip(runtimeFiles) { manifest, runtime ->
+        manifest.ifEmpty { runtime }.joinToString(" ") { it.asFile.name }
     }
+    dependsOn(classpath)
     manifest.attributes("Class-Path" to classpath)
-    manifest.attributes("Main-Class" to "org.gradle.launcher.GradleMain")
-}
-
-
-val startScripts = tasks.register<GradleStartScriptGenerator>("startScripts") {
-    startScriptsDir.set(layout.buildDirectory.dir("startScripts"))
-    launcherJar.from(tasks.jar)
-}
-
-configurations {
-    create("gradleScriptsElements") {
-        isVisible = false
-        isCanBeResolved = false
-        isCanBeConsumed = true
-        attributes.attribute(Usage.USAGE_ATTRIBUTE, objects.named("start-scripts"))
-        outgoing.artifact(startScripts)
+    if (app.mainClassName.isPresent) {
+        manifest.attributes("Main-Class" to app.mainClassName)
     }
 }

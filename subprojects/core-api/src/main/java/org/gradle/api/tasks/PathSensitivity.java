@@ -28,6 +28,7 @@ public enum PathSensitivity {
      * Consider the full path of files and directories.
      *
      * <p><b>This will prevent the task's outputs from being shared across different workspaces via the build cache.</b></p>
+     * @since 3.1
      */
     ABSOLUTE,
 
@@ -46,16 +47,27 @@ public enum PathSensitivity {
      *     <li>The path of the input directory is ignored.</li>
      *     <li>The path of the files in the input directory are considered relative to the input directory.</li>
      * </ul>
+     * @since 3.1
      */
     RELATIVE,
 
     /**
      * Consider only the name of files and directories.
+     * @since 3.1
      */
     NAME_ONLY,
 
     /**
      * Ignore file paths and directories altogether.
+     *
+     * <p>
+     *     When used on an {@literal @}{@link org.gradle.work.Incremental} input, instead of
+     *     {@link org.gradle.work.ChangeType#MODIFIED} events Gradle may produce
+     *     {@link org.gradle.work.ChangeType#ADDED} and {@link org.gradle.work.ChangeType#REMOVED} events.
+     *     This is because by ignoring the path of the individual inputs it cannot identify <em>what</em>
+     *     has been modified.
+     * </p>
+     * @since 3.1
      */
     NONE
 }

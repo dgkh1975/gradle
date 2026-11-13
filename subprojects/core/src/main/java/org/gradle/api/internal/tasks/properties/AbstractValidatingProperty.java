@@ -16,11 +16,17 @@
 
 package org.gradle.api.internal.tasks.properties;
 
-import org.gradle.api.internal.tasks.TaskValidationContext;
-import org.gradle.internal.reflect.problems.ValidationProblemId;
-import org.gradle.internal.reflect.validation.Severity;
+import org.gradle.api.problems.ProblemSpec;
+import org.gradle.api.provider.HasConfigurableValue;
+import org.gradle.api.provider.Provider;
+import org.gradle.internal.properties.PropertyValue;
 import org.gradle.internal.reflect.validation.TypeValidationContext;
 import org.gradle.util.internal.DeferredUtil;
+import org.jspecify.annotations.Nullable;
+
+import java.util.Locale;
+
+import static org.gradle.internal.deprecation.Documentation.userManual;
 
 public abstract class AbstractValidatingProperty implements ValidatingProperty {
     private final String propertyName;
@@ -35,29 +41,52 @@ public abstract class AbstractValidatingProperty implements ValidatingProperty {
         this.validationAction = validationAction;
     }
 
-    public static void reportValueNotSet(String propertyName, TypeValidationContext context) {
-        context.visitPropertyProblem(problem -> {
-            problem.withId(ValidationProblemId.VALUE_NOT_SET)
-                .reportAs(Severity.ERROR)
-                .forProperty(propertyName)
-                .withDescription("doesn't have a configured value")
-                .happensBecause("This property isn't marked as optional and no value has been configured")
-                .addPossibleSolution(() -> "Assign a value to '" + propertyName + "'")
-                .addPossibleSolution(() -> "Mark property '" + propertyName + "' as optional")
-                .documentedAt("validation_problems", "value_not_set");
+    private static final String VALUE_NOT_SET = "VALUE_NOT_SET";
+
+    public static void reportValueNotSet(String propertyName, TypeValidationContext context, boolean hasConfigurableValue) {
+        context.visitPropertyError(problem -> {
+            ProblemSpec problemSpec = problem.forProperty(propertyName)
+                .id(problem.getGradleGroup().getBuildDefinition().problemId("Value not set"))
+                .contextualLabel("doesn't have a configured value")
+                .documentedAt(userManual("validation_problems", VALUE_NOT_SET.toLowerCase(Locale.ROOT)))
+                .details("This property isn't marked as optional and no value has been configured");
+            if (hasConfigurableValue) {
+                problemSpec.solution("Assign a value to '" + propertyName + "'");
+            } else {
+                problemSpec.solution("The value of '" + propertyName + "' is calculated, make sure a valid value can be calculated");
+            }
+            problemSpec.solution("Mark property '" + propertyName + "' as optional");
         });
     }
 
     @Override
-    public void validate(TaskValidationContext context) {
-        Object unpacked = DeferredUtil.unpackOrNull(value.call());
-        if (unpacked == null) {
-            if (!optional) {
-                reportValueNotSet(propertyName, context);
-            }
+    public void validate(PropertyValidationContext context) {
+        // unnest callables without resolving deferred values (providers, factories)
+        Object unnested = DeferredUtil.unpackNestableDeferred(value.call());
+        if (isPresent(unnested)) {
+            // the value is passed unresolved; each action decides whether to resolve the root provider, see ValidationActions.validate()
+            validationAction.validate(propertyName, () -> unnested, context);
         } else {
-            validationAction.validate(propertyName, unpacked, context);
+            if (!optional) {
+                reportValueNotSet(propertyName, context, hasConfigurableValue(unnested));
+            }
         }
+    }
+
+    private static boolean isPresent(@Nullable Object value) {
+        if (value instanceof Provider) {
+            // carefully check for presence without necessarily resolving
+            return ((Provider<?>) value).isPresent();
+        }
+        return value != null;
+    }
+
+    static boolean hasConfigurableValue(@Nullable Object value) {
+        // TODO We should check the type of the property here, not its value
+        //   With the current code we'd assume a `Provider<String>` to be configurable when
+        //   the getter returns `null`. The property type is not currently available in this
+        //   context, though.
+        return value == null || HasConfigurableValue.class.isAssignableFrom(value.getClass());
     }
 
     @Override

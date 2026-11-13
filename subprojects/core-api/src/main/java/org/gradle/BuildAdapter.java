@@ -21,6 +21,7 @@ import org.gradle.api.invocation.Gradle;
 /**
  * A {@link BuildListener} adapter class for receiving build events. The methods in this class are empty. This class
  * exists as convenience for creating listener objects.
+ * @since 0.8
  */
 public class BuildAdapter implements BuildListener {
 
@@ -40,6 +41,7 @@ public class BuildAdapter implements BuildListener {
     public void projectsEvaluated(Gradle gradle) {
     }
 
+    @Deprecated
     @Override
     public void buildFinished(BuildResult result) {
     }

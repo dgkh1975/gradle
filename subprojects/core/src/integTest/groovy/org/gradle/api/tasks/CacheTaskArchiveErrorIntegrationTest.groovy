@@ -17,19 +17,29 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.BuildCacheOperationFixtures
+import org.gradle.integtests.fixtures.BuildOperationsFixture
 import org.gradle.integtests.fixtures.TestBuildCache
 import org.gradle.test.fixtures.file.TestFile
-import org.gradle.util.Requires
-import org.gradle.util.TestPrecondition
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.FileSystemTestPreconditions
+
 import spock.lang.Issue
 
 import java.util.function.Consumer
 import java.util.function.Predicate
 
+import static org.gradle.util.internal.TextUtil.escapeString
+
 class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
+
+    private static final String CACHE_KEY_PATTERN = "[0-9a-f]+"
 
     def localCache = new TestBuildCache(file("local-cache"))
     def remoteCache = new TestBuildCache(file("remote-cache"))
+
+    def buildOperations = new BuildOperationsFixture(executer, temporaryFolder)
+    def cacheOperations = new BuildCacheOperationFixtures(buildOperations)
 
     def setup() {
         executer.beforeExecute { withBuildCacheEnabled() }
@@ -44,12 +54,16 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         buildFile << """
             apply plugin: "base"
             task customTask {
-                inputs.file "input.txt"
-                outputs.file "build/output" withPropertyName "output"
+                def outputDir = file("build/output")
+                def outputFile = file("build/output/output.txt")
+                def inputFile = file("input.txt")
+
+                inputs.file(inputFile)
+                outputs.file(outputDir).withPropertyName("output")
                 outputs.cacheIf { true }
                 doLast {
-                  mkdir('build/output')
-                  file('build/output/output.txt').text = file('input.txt').text
+                  outputDir.mkdirs()
+                  outputFile.text = inputFile.text
                 }
             }
         """
@@ -57,13 +71,16 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         then:
         fails "customTask"
 
-        failureHasCause("Failed to store cache entry for task ':customTask'")
+        failureHasCause(~/Failed to store cache entry $CACHE_KEY_PATTERN for task ':customTask': Could not pack tree 'output': Expected '${escapeString(file('build/output'))}' to be a file/)
         errorOutput =~ /Could not pack tree 'output'/
-        localCache.empty
+        def cacheKey = cacheOperations.getCacheKeyForTask(":customTask")
+        !localCache.hasCacheEntry(cacheKey)
         localCache.listCacheTempFiles().empty
     }
 
     def "archive is not pushed to remote when packing fails"() {
+        executer.withStacktraceEnabled()
+
         when:
         file("input.txt") << "data"
         settingsFile << remoteCache.remoteCacheConfiguration()
@@ -72,12 +89,16 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         buildFile << """
             apply plugin: "base"
             task customTask {
-                inputs.file "input.txt"
-                outputs.file "build/output" withPropertyName "output"
+                def outputDir = file("build/output")
+                def outputFile = file("build/output/output.txt")
+                def inputFile = file("input.txt")
+
+                inputs.file(inputFile)
+                outputs.file(outputDir).withPropertyName("output")
                 outputs.cacheIf { true }
                 doLast {
-                  mkdir('build/output')
-                  file('build/output/output.txt').text = file('input.txt').text
+                  outputDir.mkdirs()
+                  outputFile.text = inputFile.text
                 }
             }
         """
@@ -86,7 +107,7 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         fails "customTask"
 
         remoteCache.empty
-        failureHasCause "Failed to store cache entry for task ':customTask'"
+        failureHasCause(~/Failed to store cache entry $CACHE_KEY_PATTERN for task ':customTask': Could not pack tree 'output': Expected '${escapeString(file('build/output'))}' to be a file/)
         errorOutput =~ /${RuntimeException.name}: Could not pack tree 'output'/
     }
 
@@ -97,33 +118,40 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         buildFile << """
             apply plugin: "base"
             task customTask {
-                inputs.file "input.txt"
-                outputs.file "build/output" withPropertyName "output"
+                def outputFile = file("build/output")
+                def inputFile = file("input.txt")
+
+                inputs.file(inputFile)
+                outputs.file(outputFile).withPropertyName("output")
                 outputs.cacheIf { true }
                 doLast {
-                  mkdir('build')
-                  file('build/output').text = file('input.txt').text
+                  outputFile.parentFile.mkdirs()
+                  outputFile.text = inputFile.text
                 }
             }
         """
         succeeds("customTask")
 
         then:
-        remoteCache.listCacheFiles().size() == 1
+        def cacheKey = cacheOperations.getCacheKeyForTask(":customTask")
+        remoteCache.hasCacheEntry(cacheKey)
 
         when:
-        remoteCache.listCacheFiles().first().text = "corrupt"
-        localCache.listCacheFiles()*.delete()
+        def cacheEntry = remoteCache.getCacheEntry(cacheKey)
+        cacheEntry.text = "corrupt"
+        localCache.deleteCacheEntry(cacheKey)
 
         then:
         fails("clean", "customTask")
-        failureHasCause("Failed to load cache entry for task ':customTask'")
+        failureHasCause(~/Failed to load cache entry $CACHE_KEY_PATTERN for task ':customTask': Could not load from remote cache: Not in GZIP format/)
 
         and:
-        localCache.listCacheFiles().empty
+        !localCache.hasCacheEntry(cacheKey)
     }
 
     def "corrupt archive loaded from local cache is purged"() {
+        executer.withStacktraceEnabled()
+
         when:
         file("input.txt") << "data"
         buildFile << """
@@ -143,19 +171,21 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         succeeds("customTask")
 
         then:
-        localCache.listCacheFiles().size() == 1
+        def cacheKey = cacheOperations.getCacheKeyForTask(":customTask")
+        localCache.hasCacheEntry(cacheKey)
 
         when:
-        localCache.listCacheFiles().first().bytes = localCache.listCacheFiles().first().bytes[0..-100]
+        def cacheEntry = localCache.getCacheEntry(cacheKey)
+        cacheEntry.bytes = cacheEntry.bytes[0..-100]
 
         then:
         fails("clean", "customTask")
-        failureHasCause("Failed to load cache entry for task ':customTask'")
+        failureHasCause(~/Failed to load cache entry $CACHE_KEY_PATTERN for task ':customTask': Could not load from local cache: Unexpected end of ZLIB input stream/)
         errorOutput.contains("Caused by: java.io.EOFException: Unexpected end of ZLIB input stream")
         localCache.listCacheFailedFiles().size() == 1
 
         and:
-        localCache.listCacheFiles().empty
+        !localCache.hasCacheEntry(cacheKey)
 
         when:
         file("build").deleteDir()
@@ -181,9 +211,11 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         succeeds("cacheable")
 
         then:
-        localCache.listCacheFiles().size() == 1
+        def cacheKey = cacheOperations.getCacheKeyForTask(":cacheable")
+        localCache.hasCacheEntry(cacheKey)
 
         when:
+        executer.withStacktraceEnabled()
         cleanBuildDir()
 
         and:
@@ -195,7 +227,7 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         localCache.listCacheFailedFiles().size() == 1
     }
 
-    @Requires(TestPrecondition.SYMLINKS)
+    @Requires(FileSystemTestPreconditions.Symlinks)
     @Issue("https://github.com/gradle/gradle/issues/9906")
     def "don't cache if task produces broken symlink"() {
         def link = file('root/link')
@@ -218,7 +250,7 @@ class CacheTaskArchiveErrorIntegrationTest extends AbstractIntegrationSpec {
         when:
         fails "producesLink"
         then:
-        failureHasCause("Failed to store cache entry for task ':producesLink'")
+        failureHasCause(~/Failed to store cache entry $CACHE_KEY_PATTERN for task ':producesLink': Could not pack tree 'outputDirectory': Couldn't read content of file '${link}'/)
         errorOutput.contains("Couldn't read content of file '${link}'")
     }
 

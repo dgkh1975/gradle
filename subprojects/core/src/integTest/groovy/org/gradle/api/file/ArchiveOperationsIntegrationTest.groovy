@@ -17,19 +17,16 @@
 package org.gradle.api.file
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import spock.lang.Unroll
+import org.gradle.test.fixtures.file.TestFile
 
 class ArchiveOperationsIntegrationTest extends AbstractIntegrationSpec {
 
-    @Unroll
     def "can read #archiveType resources in task action"() {
 
         given:
         file("inputs/file.txt") << "some text"
+        compress(file("inputs/file.txt"), archiveType)
         buildFile << """
-
-            ${compressTaskDeclaration(archiveType)}
-
             abstract class MyTask extends DefaultTask {
                 @InputFile abstract RegularFileProperty getInputFile()
                 @OutputFile abstract RegularFileProperty getOutputFile()
@@ -42,7 +39,7 @@ class ArchiveOperationsIntegrationTest extends AbstractIntegrationSpec {
             }
 
             tasks.register("myTask", MyTask) {
-                inputFile.set(createArchive.flatMap { it.outputFile })
+                inputFile.set(layout.projectDirectory.file("archive.${archiveType}"))
                 outputFile.set(layout.buildDirectory.file("unpacked/file.txt"))
             }
         """
@@ -57,15 +54,12 @@ class ArchiveOperationsIntegrationTest extends AbstractIntegrationSpec {
         archiveType << ['gzip', 'bzip2']
     }
 
-    @Unroll
     def "can read #archiveType resources in #isolation isolation worker action"() {
 
         given:
         file("inputs/file.txt") << "some text"
+        compress(file("inputs/file.txt"), archiveType)
         buildFile << """
-
-            ${compressTaskDeclaration(archiveType)}
-
             interface MyParameters extends WorkParameters {
                 RegularFileProperty getCompressedFile()
                 RegularFileProperty getTextFile()
@@ -93,7 +87,7 @@ class ArchiveOperationsIntegrationTest extends AbstractIntegrationSpec {
             }
 
             tasks.register("myTask", MyTask) {
-                inputFile.set(createArchive.flatMap { it.outputFile })
+                inputFile.set(layout.projectDirectory.file("archive.${archiveType}"))
                 outputFile.set(layout.buildDirectory.file("unpacked/file.txt"))
             }
         """
@@ -112,24 +106,20 @@ class ArchiveOperationsIntegrationTest extends AbstractIntegrationSpec {
         'bzip2'     | 'classLoader'
     }
 
-    private static String compressTaskDeclaration(String archiveType) {
-        return """
-            abstract class ${archiveType.capitalize()} extends DefaultTask {
-                @InputFile abstract RegularFileProperty getInputFile()
-                @OutputFile abstract RegularFileProperty getOutputFile()
-                @TaskAction def action() {
-                    ant.${archiveType}(src: inputFile.get().asFile.absolutePath, destfile: outputFile.get().asFile.absolutePath)
-                }
-            }
-
-            def createArchive = tasks.register("createArchive", ${archiveType.capitalize()}) {
-                inputFile.set(layout.projectDirectory.file("inputs/file.txt"))
-                outputFile.set(layout.buildDirectory.file("archive.${archiveType}"))
-            }
-        """
+    private void compress(TestFile source, String archiveType) {
+        TestFile archive = file("archive.${archiveType}")
+        switch (archiveType) {
+            case 'gzip':
+                source.gzipTo(archive)
+                break
+            case 'bzip2':
+                source.bzip2To(archive)
+                break
+            default:
+                throw new IllegalArgumentException("Unknown archive type: ${archiveType}")
+        }
     }
 
-    @Unroll
     def "can create readonly FileTree for #archiveType archive in task action"() {
 
         given:
@@ -170,7 +160,6 @@ class ArchiveOperationsIntegrationTest extends AbstractIntegrationSpec {
         archiveType << ['zip', 'tar']
     }
 
-    @Unroll
     def "can create readonly FileTree for #archiveType archive in #isolation isolation worker action"() {
 
         given:

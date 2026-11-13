@@ -18,11 +18,14 @@ package promotion
 
 import common.VersionedSettingsBranch
 
-class PublishNightlySnapshotFromQuickFeedback(branch: VersionedSettingsBranch) : PublishGradleDistribution(
-    promotedBranch = branch.branchName,
-    task = branch.promoteNightlyTaskName(),
-    triggerName = "QuickFeedback"
-) {
+class PublishNightlySnapshotFromQuickFeedback(
+    branch: VersionedSettingsBranch,
+) : PublishGradleDistributionFullBuild(
+        promotedBranch = branch.branchName,
+        prepTask = branch.prepNightlyTaskName(),
+        promoteTask = branch.promoteNightlyTaskName(),
+        triggerName = "QuickFeedback",
+    ) {
     init {
         id("Promotion_SnapshotFromQuickFeedback")
         name = "Nightly Snapshot (from QuickFeedback)"

@@ -18,7 +18,7 @@ package org.gradle.internal.buildtree;
 
 import org.gradle.api.internal.GradleInternal;
 import org.gradle.api.internal.SettingsInternal;
-import org.gradle.internal.build.BuildToolingModelAction;
+import org.gradle.execution.EntryTaskSelector;
 
 import java.util.function.Consumer;
 import java.util.function.Function;
@@ -47,6 +47,11 @@ public interface BuildTreeLifecycleController {
     void scheduleAndRunTasks();
 
     /**
+     * A for {@link #scheduleAndRunTasks()}, but includes the tasks selected by the given selector <em>before</em> those specified in the {@link org.gradle.StartParameter}.
+     */
+    void scheduleAndRunTasks(EntryTaskSelector selector);
+
+    /**
      * Configures the build, optionally schedules and runs any tasks specified in the {@link org.gradle.StartParameter} associated with the build, calls the given action and finally finishes up the build.
      * When this method returns, all user code will have completed, including 'build finished' hooks.
      *
@@ -54,5 +59,5 @@ public interface BuildTreeLifecycleController {
      *
      * <p>Does not call the given action when task execution fails.
      */
-    <T> T fromBuildModel(boolean runTasks, BuildToolingModelAction<? extends T> action);
+    <T> T fromBuildModel(boolean runTasks, BuildTreeModelAction<? extends T> action);
 }

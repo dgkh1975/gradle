@@ -18,17 +18,17 @@ package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
 import org.gradle.test.fixtures.file.TestFile
-import org.gradle.util.Requires
-import org.gradle.util.TestPrecondition
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.OsTestPreconditions
+import org.gradle.test.preconditions.FileSystemTestPreconditions
+
 import spock.lang.Issue
-import spock.lang.Unroll
 
 import static org.junit.Assert.assertTrue
 
-@Unroll
 class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements UnreadableCopyDestinationFixture {
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
+    @Requires(FileSystemTestPreconditions.FilePermissions)
     def "file permissions are preserved in copy action"() {
         given:
         def testSourceFile = file(testFileName)
@@ -46,12 +46,14 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
         run "copy"
         then:
         file("build/tmp/${testFileName}").mode == mode
+
         where:
-        mode << [0746, 0746]
-        testFileName << ["reference.txt", "\u0627\u0644\u0627\u0655\u062F\u0627\u0631\u0629.txt"]
+        mode | testFileName
+        0746 | "reference.txt"
+        0746 | "\u0627\u0644\u0627\u0655\u062F\u0627\u0631\u0629.txt"
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
+    @Requires(FileSystemTestPreconditions.FilePermissions)
     def "directory permissions are preserved in copy action"() {
         given:
         TestFile parent = getTestDirectory().createDir("testparent")
@@ -74,9 +76,38 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
         mode << [0755, 0776]
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
-    @Unroll
-    def "fileMode can be modified in copy task"() {
+    @Requires(FileSystemTestPreconditions.Symlinks)
+    def "symlinked file permissions are preserved in copy action"() {
+        given:
+        def mode = 0746
+        def testSourceFile = file(testFileName)
+        testSourceFile << "test file content"
+        testSourceFile.mode = mode
+
+        def testSourceFileLink = file("${testFileName}_link").createLink(testSourceFile.getRelativePathFromBase())
+
+        and:
+        buildFile << """
+        task copy(type: Copy) {
+            from "${testSourceFile.absolutePath}"
+            from "${testSourceFileLink.absolutePath}"
+            into ("build/tmp")
+        }
+        """
+
+        when:
+        run "copy"
+
+        then:
+        file("build/tmp/${testFileName}").mode == mode
+        file("build/tmp/${testFileName}_link").mode == mode
+
+        where:
+        testFileName << ["reference.txt", "\u0627\u0644\u0627\u0655\u062F\u0627\u0631\u0629.txt"]
+    }
+
+    @Requires(FileSystemTestPreconditions.FilePermissions)
+    def "file permissions can be modified in copy task"() {
         given:
 
         file("reference.txt") << 'test file"'
@@ -86,7 +117,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
              task copy(type: Copy) {
                  from "reference.txt"
                  into ("build/tmp")
-                 fileMode = $mode
+                 filePermissions { unix($mode) }
              }
             """
         when:
@@ -114,7 +145,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
         mode << [0755, 0776]
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
+    @Requires(FileSystemTestPreconditions.FilePermissions)
     def "file permissions can be modified with eachFile closure"() {
         given:
         def testSourceFile = file("reference.txt") << 'test file"'
@@ -124,7 +155,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
             task copy(type: Copy) {
                 from "reference.txt"
                 eachFile {
-		            it.setMode(0755)
+		            permissions { unix(0755) }
 	            }
                 into ("build/tmp")
             }
@@ -148,20 +179,19 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
         file("build/tmp/reference.txt").mode == 0755
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
-    @Unroll
-    def "fileMode can be modified in copy action"() {
+    @Requires(FileSystemTestPreconditions.FilePermissions)
+    def "file permissions can be modified in copy action"() {
         given:
         file("reference.txt") << 'test file"'
 
         and:
-        buildFile << """
+        buildFile """
             task copy {
                 doLast {
-                    copy {
+                    services.get(FileSystemOperations).copy {
                         from 'reference.txt'
                         into 'build/tmp'
-                        fileMode = $mode
+                        filePermissions { unix($mode) }
                     }
                 }
             }
@@ -177,9 +207,8 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
 
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
-    @Unroll
-    def "dirMode can be modified in copy task"() {
+    @Requires(FileSystemTestPreconditions.FilePermissions)
+    def "dir permissions can be modified in copy task"() {
         given:
         TestFile parent = getTestDirectory().createDir("testparent")
         TestFile child = parent.createDir("testchild")
@@ -191,7 +220,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
             task copy(type: Copy) {
                 from "testparent"
                 into ("build/tmp")
-                dirMode = $mode
+                dirPermissions { unix($mode) }
             }
             """
         when:
@@ -216,7 +245,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
         mode << [0755, 0776]
     }
 
-    @Requires(TestPrecondition.WINDOWS)
+    @Requires(OsTestPreconditions.Windows)
     def "file permissions are not preserved on OS without permission support"() {
         given:
         def testSourceFile = file("reference.txt") << 'test file"'
@@ -237,7 +266,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
         testTargetFile.canWrite()
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
+    @Requires(FileSystemTestPreconditions.FilePermissions)
     @Issue('https://github.com/gradle/gradle/issues/2639')
     def "excluded files' permissions should be ignored"() {
         given:
@@ -266,9 +295,9 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
         file('src/unauthorized').mode = 0777
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
+    @Requires(FileSystemTestPreconditions.FilePermissions)
     @Issue('https://github.com/gradle/gradle/issues/9576')
-    def "unreadable #type not produced by task causes a deprecation warning"() {
+    def "unreadable #type not produced by task fails"() {
         given:
         def input = file("readableFile.txt").createFile()
 
@@ -285,25 +314,23 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
 
         when:
         executer.withStackTraceChecksDisabled()
-        expectUnreadableCopyDestinationDeprecationWarning()
-        succeeds "copy", "--info"
+        runAndFail "copy"
         then:
-        outputDirectory.list().contains input.name
-        outputContains("Cannot access output property 'destinationDir' of task ':copy'")
-        outputContains(expectedError(unreadableOutput))
+        expectUnreadableCopyDestinationFailure()
+        failureHasCause(expectedError(unreadableOutput))
 
         cleanup:
         unreadableOutput.makeReadable()
 
         where:
         type        | create              | expectedError
-        'file'      | { it.createFile() } | { "java.io.UncheckedIOException: Failed to create MD5 hash for file '${it.absolutePath}' as it does not exist." }
+        'file'      | { it.createFile() } | { "Failed to create MD5 hash for file: ${it.absolutePath} (Permission denied)" }
         'directory' | { it.createDir() }  | { "java.nio.file.AccessDeniedException: ${it.absolutePath}" }
     }
 
-    @Requires(TestPrecondition.FILE_PERMISSIONS)
+    @Requires(FileSystemTestPreconditions.FilePermissions)
     @Issue('https://github.com/gradle/gradle/issues/9576')
-    def "can copy into destination directory with unreadable file when using ignoreExistingContentInDestinationDir"() {
+    def "can copy into destination directory with unreadable file when using doNotTrackState"() {
         given:
         def input = file("readableFile.txt").createFile()
 
@@ -315,7 +342,7 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
             task copy(type: Copy) {
                 from '${input.name}'
                 into '${outputDirectory.name}'
-                ignoreExistingContentInDestinationDir()
+                doNotTrackState("Destination contains unreadable files")
             }
         """
 
@@ -333,5 +360,147 @@ class CopyPermissionsIntegrationTest extends AbstractIntegrationSpec implements 
 
         cleanup:
         unreadableOutput.makeReadable()
+    }
+
+    @Requires(FileSystemTestPreconditions.FilePermissions)
+    def "permissions block sets sensible defaults"() {
+        given:
+        withSourceFiles("r--------")
+        buildFile '''
+            task (copy, type:Copy) {
+               from 'files'
+               into 'dest'
+               eachFile {
+                    permissions {}
+               }
+            }
+        '''.stripIndent()
+
+        when:
+        run 'copy'
+
+        then:
+        assertDestinationFilePermissions("rw-r--r--")
+    }
+
+    @Requires(FileSystemTestPreconditions.FilePermissions)
+    def "permissions block can customize permissions (Groovy DSL)"() {
+        given:
+        withSourceFiles("r--------")
+        buildFile '''
+            task (copy, type:Copy) {
+               from 'files'
+               into 'dest'
+               eachFile {
+                    permissions {
+                        user {
+                            write = false
+                        }
+                        user.execute = true
+                        group.execute = true
+                        other {
+                            write = true
+                        }
+                    }
+               }
+            }
+        '''.stripIndent()
+
+        when:
+        run 'copy'
+
+        then:
+        assertDestinationFilePermissions("r-xr-xrw-")
+    }
+
+    @Requires(FileSystemTestPreconditions.FilePermissions)
+    def "permissions block can customize permissions (Kotlin DSL)"() {
+        given:
+        withSourceFiles("r--------")
+
+        buildFile.delete()
+        buildKotlinFile.text = '''
+            tasks.register<Copy>("copy") {
+               from("files")
+               into("dest")
+               eachFile {
+                    permissions {
+                        user {
+                            write = false
+                        }
+                        user.execute = true
+                        group.execute = true
+                        other {
+                            write = true
+                        }
+                    }
+               }
+            }
+        '''.stripIndent()
+
+        when:
+        run 'copy'
+
+        then:
+        assertDestinationFilePermissions("r-xr-xrw-")
+    }
+
+    @Requires(FileSystemTestPreconditions.FilePermissions)
+    def "permissions can be created via factory (#description)"(String description, String setting) {
+        given:
+        withSourceFiles("r--------")
+        buildFile """
+            def p = project.services.get(FileSystemOperations).directoryPermissions {
+                user {
+                    write = false
+                }
+                user.execute = false
+                group.write = false
+                other {
+                    execute = false
+                }
+            }
+
+            task (copy, type:Copy) {
+               from 'files'
+               into 'dest'
+               ${setting}
+            }
+        """.stripIndent()
+
+        when:
+        run 'copy'
+
+        then:
+        assertDestinationFilePermissions("r-xr-xrw-")
+
+        where:
+        description         | setting
+        "permissions"       | """
+                                eachFile {
+                                    permissions = p
+                                }
+                              """
+        "file permissions"  | "filePermissions.set(p)"
+    }
+
+    private def withSourceFiles(String permissions) {
+        file("files/sub/a.txt").createFile().setPermissions(permissions)
+        file("files/sub/dir/b.txt").createFile().setPermissions(permissions)
+        file("files/c.txt").createFile().setPermissions(permissions)
+        file("files/sub/empty").createDir().setPermissions(permissions)
+    }
+
+    private def assertDestinationFilePermissions(String permissions) {
+        file('dest').assertHasDescendants(
+            'sub/a.txt',
+            'sub/dir/b.txt',
+            'c.txt',
+            'sub/empty'
+        )
+        file("dest/sub/a.txt").permissions == permissions
+        file("dest/sub/dir/b.txt").permissions == permissions
+        file("dest/c.txt").permissions == permissions
+        file("dest/sub/empty").permissions == "r--------" // eachFile doesn't cover directories
     }
 }

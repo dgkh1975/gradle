@@ -16,11 +16,10 @@
 
 package org.gradle.integtests.composite
 
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
 import org.gradle.integtests.fixtures.build.BuildTestFile
 import org.gradle.integtests.fixtures.resolve.ResolveTestFixture
 import spock.lang.Issue
-import spock.lang.Unroll
 
 /**
  * Tests for resolving dependency graph with substitution within a composite build.
@@ -35,16 +34,19 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
         mavenRepo.module("org.test", "buildB", "1.0").publish()
         mavenRepo.module("org.test", "b2", "1.0").publish()
 
-        resolve = new ResolveTestFixture(buildA.buildFile).expectDefaultConfiguration("runtime")
+        resolve = new ResolveTestFixture(buildA)
+        buildA.buildFile << """
+            ${resolve.configureProject("runtimeClasspath")}
+        """
 
         buildB = multiProjectBuild("buildB", ['b1', 'b2']) {
             buildFile << """
                 allprojects {
                     apply plugin: 'java'
-                    version "2.0"
+                    version = "2.0"
 
                     repositories {
-                        maven { url "${mavenRepo.uri}" }
+                        maven { url = "${mavenRepo.uri}" }
                     }
                 }
 """
@@ -57,6 +59,7 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
         }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "will only make declared substitutions when defined for included build"() {
         given:
         dependency "org.test:buildB:1.0"
@@ -70,18 +73,19 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         expect:
         resolvedGraph {
-            edge("org.test:buildB:1.0", "project :buildB", "org.test:buildB:2.0") {
+            edge("org.test:buildB:1.0", ":buildB", "org.test:buildB:2.0") {
                 compositeSubstitute()
-                configuration = "runtimeElements"
+                variant("runtimeElements")
             }
-            edge("org.test:b1:1.0", "project :buildB:b1", "org.test:b1:2.0") {
+            edge("org.test:b1:1.0", ":buildB:b1", "org.test:b1:2.0") {
                 compositeSubstitute()
-                configuration = "runtimeElements"
+                variant("runtimeElements")
             }
             module("org.test:b2:1.0")
         }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-project / cross-build configuration")
     def "can combine included builds with declared and discovered substitutions"() {
         given:
         dependency "org.test:b1:1.0"
@@ -94,17 +98,18 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         expect:
         resolvedGraph {
-            edge("org.test:b1:1.0", "project :buildB:b1", "org.test:b1:2.0") {
-                configuration = "runtimeElements"
+            edge("org.test:b1:1.0", ":buildB:b1", "org.test:b1:2.0") {
+                variant("runtimeElements")
                 compositeSubstitute()
             }
-            edge("org.test:XXX:1.0", "project :buildC", "org.test:buildC:1.0") {
-                configuration = "runtimeElements"
+            edge("org.test:XXX:1.0", ":buildC", "org.test:buildC:1.0") {
+                variant("runtimeElements")
                 compositeSubstitute()
             }
         }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "can inject substitutions into other builds"() {
         given:
         mavenRepo.module("org.test", "plugin", "1.0").publish()
@@ -119,11 +124,11 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         expect:
         resolvedGraph {
-            edge("org.test:buildB:1.0", "project :buildB", "org.test:buildB:2.0") {
-                configuration = "runtimeElements"
+            edge("org.test:buildB:1.0", ":buildB", "org.test:buildB:2.0") {
+                variant("runtimeElements")
                 compositeSubstitute()
-                edge("org.test:XXX:1.0", "project :buildC", "org.test:buildC:1.0") {
-                    configuration = "runtimeElements"
+                edge("org.test:XXX:1.0", ":buildC", "org.test:buildC:1.0") {
+                    variant("runtimeElements")
                     compositeSubstitute()
                 }
             }
@@ -131,6 +136,7 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
     }
 
     @Issue("https://github.com/gradle/gradle/issues/5871")
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "can inject substitutions into other builds when root build does not reference included builds via a dependency and included build has non-empty script classpath"() {
         mavenRepo.module("org.test", "plugin", "1.0").publish()
 
@@ -157,10 +163,11 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
         execute(buildA, "assembleB")
 
         then:
-        result.assertTaskExecuted(":buildB:jar")
-        result.assertTaskExecuted(":buildC:jar")
+        result.assertTaskScheduled(":buildB:jar")
+        result.assertTaskScheduled(":buildC:jar")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "can substitute arbitrary coordinates for included build"() {
         given:
         dependency "org.test:buildX:1.0"
@@ -172,8 +179,8 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         then:
         resolvedGraph {
-            edge("org.test:buildX:1.0", "project :buildB:b1", "org.test:b1:2.0") {
-                configuration = "runtimeElements"
+            edge("org.test:buildX:1.0", ":buildB:b1", "org.test:b1:2.0") {
+                variant("runtimeElements")
                 compositeSubstitute()
             }
         }
@@ -201,13 +208,14 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         then:
         resolvedGraph {
-            edge("org.gradle:buildX:1.0", "project :buildB", "org.test:buildB2:1.0") {
-                configuration = "runtimeElements"
+            edge("org.gradle:buildX:1.0", ":buildB", "org.test:buildB2:1.0") {
+                variant("runtimeElements")
                 compositeSubstitute()
             }
         }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "substitutes external dependency with project dependency from same participant build"() {
         given:
         dependency "org.test:buildB:1.0"
@@ -221,11 +229,11 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         then:
         resolvedGraph {
-            edge("org.test:buildB:1.0", "project :buildB", "org.test:buildB:2.0") {
-                configuration = "runtimeElements"
+            edge("org.test:buildB:1.0", ":buildB", "org.test:buildB:2.0") {
+                variant("runtimeElements")
                 compositeSubstitute()
-                edge("org.test:b2:1.0", "project :buildB:b2", "org.test:b2:2.0") {
-                    configuration = "runtimeElements"
+                edge("org.test:b2:1.0", ":buildB:b2", "org.test:b2:2.0") {
+                    variant("runtimeElements")
                     compositeSubstitute()
                 }
             }
@@ -254,8 +262,8 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         then:
         resolvedGraph {
-            edge("org.test:platform:1.0", "project :platform", "org.test:platform:2.0") {
-                configuration = "runtimeElements"
+            edge("org.test:platform:1.0", ":platform", "org.test:platform:2.0") {
+                variant("runtimeElements")
                 compositeSubstitute()
                 noArtifacts()
             }
@@ -263,7 +271,6 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
     }
 
-    @Unroll
     def "preserves the requested attributes when performing a composite substitution using mapping"() {
         platformDependency 'org.test:platform:1.0'
 
@@ -285,8 +292,8 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         then:
         resolvedGraph {
-            edge("org.test:platform:1.0", "project :platform", ":platform:") {
-                configuration = "runtimeElements"
+            edge("org.test:platform:1.0", ":platform", ":platform:") {
+                variant("runtimeElements")
                 compositeSubstitute()
                 noArtifacts()
             }
@@ -301,6 +308,7 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
         'module("org.test:platform")'           | 'project(":")'
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-project / cross-build configuration")
     def "preserves the requested capabilities when performing a composite substitution"() {
         buildA.buildFile << """
             dependencies {
@@ -320,18 +328,20 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         then:
         resolvedGraph {
-            edge("org.test:buildB:1.0", "project :buildB", "org.test:buildB:2.0") {
-                configuration = "testFixturesRuntimeElements"
+            edge("org.test:buildB:1.0", ":buildB", "org.test:buildB:2.0") {
+                variant("testFixturesRuntimeElements")
                 compositeSubstitute()
-                artifact name: 'buildB'
                 artifact classifier: 'test-fixtures'
                 project(":buildB", "org.test:buildB:2.0") {
+                    variant("runtimeElements")
+                    artifact(name: 'buildB')
                 }
             }
         }
 
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-project / cross-build configuration")
     def "preserves the requested capabilities when performing a composite substitution using mapping"() {
         buildA.buildFile << """
             dependencies {
@@ -354,12 +364,13 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
 
         then:
         resolvedGraph {
-            edge("org.test:buildB:1.0", "project :buildB", "org.test:buildB:2.0") {
-                configuration = "testFixturesRuntimeElements"
+            edge("org.test:buildB:1.0", ":buildB", "org.test:buildB:2.0") {
+                variant("testFixturesRuntimeElements")
                 compositeSubstitute()
-                artifact name: 'buildB'
                 artifact classifier: 'test-fixtures'
                 project(":buildB", "org.test:buildB:2.0") {
+                    variant("runtimeElements")
+                    artifact(name: 'buildB')
                 }
             }
         }
@@ -372,7 +383,7 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
     }
 
     @Issue("https://github.com/gradle/gradle/issues/15659")
-    @ToBeFixedForConfigurationCache(because = "uses dependencies task")
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "resolves dependencies of included build with dependency substitution when substitution build contains buildSrc"() {
         given:
         includeBuild(buildB, """
@@ -394,6 +405,7 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
     }
 
     @Issue("https://github.com/gradle/gradle/issues/15659")
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "builds included build with dependency substitution when substitution build contains buildSrc"() {
         given:
         includeBuild(buildB, """
@@ -414,7 +426,6 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
         execute(buildA, ":buildC:build")
     }
 
-    @ToBeFixedForConfigurationCache(because = "uses dependencies tasks")
     @Issue("https://github.com/gradle/gradle/issues/15659")
     def "resolves dependencies of included build with dependency substitution when substitution build uses a plugin from its build-logic build"() {
         given:
@@ -455,7 +466,6 @@ class CompositeBuildDeclaredSubstitutionsIntegrationTest extends AbstractComposi
     }
 
     void resolvedGraph(@DelegatesTo(ResolveTestFixture.NodeBuilder) Closure closure) {
-        resolve.prepare()
         execute(buildA, ":checkDeps", buildArgs)
         resolve.expectGraph {
             root(":", "org.test:buildA:1.0", closure)

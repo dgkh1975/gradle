@@ -16,11 +16,13 @@
 
 package org.gradle.integtests.composite
 
-import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
+import spock.lang.Issue
 
-class CompositeBuildTaskExcludeIntegrationTest extends AbstractIntegrationSpec {
+class CompositeBuildTaskExcludeIntegrationTest extends AbstractCompositeBuildTaskExecutionIntegrationTest {
 
     def setup() {
+        createDirs("sub", "included", "included/sub")
         settingsFile << """
             rootProject.name = 'root'
             include('sub')
@@ -90,45 +92,210 @@ class CompositeBuildTaskExcludeIntegrationTest extends AbstractIntegrationSpec {
         """
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "can exclude tasks from an included build"() {
-        when:
-        succeeds("build", "-x", ":included:sub:test")
-
-        then:
-        result.assertTasksExecuted(":test", ":build", ":sub:test", ":sub:build", ":included:test", ":included:build" , ":included:sub:build")
-        result.assertTaskNotExecuted(":included:sub:test")
+        expect:
+        2.times {
+            succeeds("build", "-x", ":included:sub:test")
+            result.assertTasksScheduled(":test", ":build", ":sub:test", ":sub:build", ":included:test", ":included:build", ":included:sub:build")
+            result.assertTasksNotScheduled(":included:sub:test")
+        }
+        2.times {
+            succeeds("build", "-x", "included:sub:test")
+            result.assertTasksScheduled(":test", ":build", ":sub:test", ":sub:build", ":included:test", ":included:build", ":included:sub:build")
+            result.assertTasksNotScheduled(":included:sub:test")
+        }
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
+    def "can exclude tasks using pattern matching"() {
+        expect:
+        2.times {
+            succeeds("build", "-x", ":included:sub:te")
+            result.assertTasksScheduled(":test", ":build", ":sub:test", ":sub:build", ":included:test", ":included:build", ":included:sub:build")
+            result.assertTasksNotScheduled(":included:sub:test")
+        }
+        2.times {
+            succeeds("build", "-x", "i:s:te")
+            result.assertTasksScheduled(":test", ":build", ":sub:test", ":sub:build", ":included:test", ":included:build", ":included:sub:build")
+            result.assertTasksNotScheduled(":included:sub:test")
+        }
+    }
+
+    @ToBeFixedForIsolatedProjects(because = "cross-project / cross-build configuration")
     def "excluding a task from a root project does not affect included task with same path"() {
         when:
         succeeds("build", "-x", ":sub:test")
 
         then:
-        result.assertTasksExecuted(":test", ":build", ":sub:build", ":included:test", ":included:build", ":included:sub:test", ":included:sub:build")
-        result.assertTaskNotExecuted(":sub:test")
+        result.assertTasksScheduled(":test", ":build", ":sub:build", ":included:test", ":included:build", ":included:sub:test", ":included:sub:build")
+        result.assertTasksNotScheduled(":sub:test")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "cannot use unqualified task paths to exclude tasks from included build roots"() {
         when:
         run("build", "-x", "test")
 
         then:
-        result.assertTasksExecuted(":build", ":sub:build", ":included:build", ":included:sub:build", ":included:test", ":included:sub:test")
-        result.assertTaskNotExecuted(":test")
-        result.assertTaskNotExecuted(":sub:test")
+        result.assertTasksScheduled(":build", ":sub:build", ":included:build", ":included:sub:build", ":included:test", ":included:sub:test")
+        result.assertTasksNotScheduled(":test")
+        result.assertTasksNotScheduled(":sub:test")
     }
 
-    def "cannot use unqualified absolute paths to to exclude task from included build root"() {
-        expect:
-        runAndFail("build", "-x", "included:test")
-    }
-
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "cannot use unqualified task paths to exclude tasks from included build subproject"() {
         when:
         run("build", "-x", "sub:test")
 
         then:
-        result.assertTasksExecuted(":test", ":build", ":sub:build", ":included:test", ":included:build", ":included:sub:test", ":included:sub:build")
-        result.assertTaskNotExecuted(":sub:test")
+        result.assertTasksScheduled(":test", ":build", ":sub:build", ":included:test", ":included:build", ":included:sub:test", ":included:sub:build")
+        result.assertTasksNotScheduled(":sub:test")
+    }
+
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
+    def "can exclude task from main build when root build uses project plugin from included build"() {
+        setup:
+        settingsFile << "includeBuild('build-logic')"
+        def rootDir = file("build-logic")
+        addPluginIncludedBuild(rootDir)
+        buildFile.text = """
+            plugins {
+                id("test.plugin")
+                id("java-library")
+            }
+        """
+
+        expect:
+        2.times {
+            succeeds("assemble", "-x", "jar")
+            result.assertTasksNotScheduled(":jar")
+        }
+    }
+
+    def "can exclude task from main build when root build uses settings plugin from included build"() {
+        setup:
+        def rootDir = file("build-logic")
+        addSettingsPluginIncludedBuild(rootDir)
+        settingsFile.text = """
+            pluginManagement {
+                includeBuild("build-logic")
+            }
+            plugins {
+                id("test.plugin")
+            }
+        """
+        buildFile.text = """
+            plugins {
+                id("java-library")
+            }
+        """
+
+        expect:
+        2.times {
+            succeeds("assemble", "-x", "jar")
+            result.assertTasksNotScheduled(":jar")
+        }
+    }
+
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
+    def "can exclude task from included build that produces a project plugin used from root build"() {
+        setup:
+        settingsFile << "includeBuild('build-logic')"
+        def rootDir = file("build-logic")
+        addPluginIncludedBuild(rootDir)
+        buildFile.text = """
+            plugins {
+                id("test.plugin")
+                id("java-library")
+            }
+        """
+
+        expect:
+        succeeds("greeting", ":build-logic:classes")
+        2.times {
+            succeeds("greeting", "-x", ":build-logic:classes")
+            result.assertTasksNotScheduled(":build-logic:classes")
+        }
+    }
+
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
+    def "can exclude task from included build that is a dependency of the root build and also produces a project plugin used from root build"() {
+        setup:
+        settingsFile << "includeBuild('build-logic')"
+        def rootDir = file("build-logic")
+        addPluginIncludedBuild(rootDir)
+        buildFile.text = """
+            plugins {
+                id("test.plugin")
+                id("java-library")
+            }
+            dependencies {
+                implementation("lib:lib:1.0")
+            }
+        """
+
+        expect:
+        succeeds("greeting", ":build-logic:classes")
+        2.times {
+            succeeds("greeting", "-x", ":build-logic:jar")
+            result.assertTasksNotScheduled(":build-logic:jar")
+            result.assertTasksNotScheduled(":build-logic:compileJava")
+        }
+    }
+
+    @Issue("https://github.com/gradle/gradle/issues/21708")
+    @ToBeFixedForIsolatedProjects(because = "cross-project / cross-build configuration")
+    def "can exclude task from included build that requires a project plugin from another build"() {
+        setup:
+        settingsFile << """
+            includeBuild('build-logic')
+            includeBuild('app')
+        """
+        def rootDir = file("build-logic")
+        addPluginIncludedBuild(rootDir)
+        file("app/build.gradle") << """
+            plugins {
+                id("test.plugin")
+                id("java-library")
+            }
+        """
+
+        expect:
+        2.times {
+            succeeds(":app:assemble", "-x", ":app:processResources")
+            result.assertTasksNotScheduled(":app:processResources")
+        }
+    }
+
+    @Issue("https://github.com/gradle/gradle/issues/24341")
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
+    def "can exclude task with included build that in turn includes a build for convention plugins"() {
+        setup:
+        file('included/settings.gradle').text = """
+            pluginManagement {
+                includeBuild('../conventions')
+            }
+            plugins {
+                id 'script-plugin'
+            }
+            include('sub')
+        """
+        file('conventions/settings.gradle') << """
+        """
+        file('conventions/build.gradle') << """
+            plugins {
+                id 'groovy-gradle-plugin'
+            }
+        """
+        file('conventions/src/main/groovy/script-plugin.settings.gradle') << """
+        """
+
+        expect:
+        2.times {
+            succeeds("build", "-x", "test")
+            result.assertTasksNotScheduled(":test")
+            result.assertTasksNotScheduled(":sub:test")
+        }
     }
 }

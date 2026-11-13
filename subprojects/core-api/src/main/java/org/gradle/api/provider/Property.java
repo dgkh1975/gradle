@@ -16,9 +16,11 @@
 
 package org.gradle.api.provider;
 
-import org.gradle.api.model.ObjectFactory;
-
-import javax.annotation.Nullable;
+import org.gradle.api.SupportsKotlinAssignmentOverloading;
+import org.gradle.api.model.ManagedType;
+import org.gradle.declarative.dsl.model.annotations.VisibleInDefinition;
+import org.gradle.declarative.dsl.model.annotations.internal.DeclarativeWithHiddenMembers;
+import org.jspecify.annotations.Nullable;
 
 /**
  * A container object that represents a configurable value of a specific type. A {@link Property} is also a
@@ -34,18 +36,28 @@ import javax.annotation.Nullable;
  * </p>
  *
  * <p>
- * You can create a {@link Property} instance using {@link ObjectFactory#property(Class)}. There are
- * also several specialized subtypes of this interface that can be created using various other factory methods.
+ * There are also several specialized subtypes of this interface that can be created using various other factory methods.
  * </p>
  *
+ * <p>
+ * Instances of this interface are not thread-safe for reading and writing.
+ * It is not safe to share the same Property instance between different projects.
+ * </p>
  * <p>
  * <b>Note:</b> This interface is not intended for implementation by build script or plugin authors.
  * </p>
  *
  * @param <T> Type of value represented by the property
  * @since 4.3
+ *
+ * @see ManagedType Create an instance of this as a managed property (preferred).
+ * @see org.gradle.api.model.ObjectFactory#property(Class) Create an instance of this manually.
  */
-public interface Property<T> extends Provider<T>, HasConfigurableValue {
+@ManagedType
+@SupportsKotlinAssignmentOverloading
+@VisibleInDefinition
+@DeclarativeWithHiddenMembers
+public interface Property<T> extends Provider<T>, HasConfigurableValue, SupportsConvention {
     /**
      * Sets the value of the property to the given value, replacing whatever value the property already had.
      *
@@ -56,6 +68,7 @@ public interface Property<T> extends Provider<T>, HasConfigurableValue {
      * </p>
      *
      * @param value The value, can be null.
+     * @since 4.3
      */
     void set(@Nullable T value);
 
@@ -66,7 +79,7 @@ public interface Property<T> extends Provider<T>, HasConfigurableValue {
      *
      * <p>
      * This method can NOT be used to discard the value of the property. Specifying a {@code null} provider will result
-     * in an {@code IllegalArgumentException} being thrown. When the provider has no value, this property will also have
+     * in a {@code NullPointerException} being thrown. When the provider has no value, this property will also have
      * no value - regardless of whether or not a convention has been set.
      * </p>
      *
@@ -76,6 +89,7 @@ public interface Property<T> extends Provider<T>, HasConfigurableValue {
      * </p>
      *
      * @param provider The provider of the property's value, can't be null.
+     * @since 4.3
      */
     void set(Provider<? extends T> provider);
 
@@ -103,7 +117,7 @@ public interface Property<T> extends Provider<T>, HasConfigurableValue {
      *
      * <p>
      * This method can NOT be used to discard the value of the property. Specifying a {@code null} provider will result
-     * in an {@code IllegalArgumentException} being thrown. When the provider has no value, this property will also have
+     * in a {@code NullPointerException} being thrown. When the provider has no value, this property will also have
      * no value - regardless of whether or not a convention has been set.
      * </p>
      *
@@ -117,6 +131,15 @@ public interface Property<T> extends Provider<T>, HasConfigurableValue {
      * @since 5.6
      */
     Property<T> value(Provider<? extends T> provider);
+
+    /**
+     * {@inheritDoc}
+     * <p>
+     * This is similar to calling {@link #value(Object)} with a <code>null</code> argument.
+     * </p>
+     */
+    @Override
+    Property<T> unset();
 
     /**
      * Specifies the value to use as the convention (default value) for this property. If the convention is set and
@@ -146,7 +169,7 @@ public interface Property<T> extends Provider<T>, HasConfigurableValue {
      *
      * <p>
      * This method can't be used to specify that a property does not have a default value. Passing in a {@code null}
-     * provider will result in an {@code IllegalArgumentException} being thrown. When the provider doesn't have
+     * provider will result in a {@code NullPointerException} being thrown. When the provider doesn't have
      * a value, then the property will behave as if it wouldn't have a convention specified.
      * </p>
      *
@@ -155,6 +178,16 @@ public interface Property<T> extends Provider<T>, HasConfigurableValue {
      * @since 5.1
      */
     Property<T> convention(Provider<? extends T> provider);
+
+    /**
+     * {@inheritDoc}
+     *
+     * <p>
+     * This is similar to calling {@link #convention(Object)} with a <code>null</code> argument.
+     * </p>
+     */
+    @Override
+    Property<T> unsetConvention();
 
     /**
      * Disallows further changes to the value of this property. Calls to methods that change the value of this property,

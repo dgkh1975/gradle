@@ -17,14 +17,12 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import spock.lang.Unroll
 
 import static org.gradle.api.tasks.PathSensitivity.ABSOLUTE
 import static org.gradle.api.tasks.PathSensitivity.NAME_ONLY
 import static org.gradle.api.tasks.PathSensitivity.NONE
 import static org.gradle.api.tasks.PathSensitivity.RELATIVE
 
-@Unroll
 abstract class AbstractPathSensitivityIntegrationSpec extends AbstractIntegrationSpec {
 
     def "single source file renamed with #pathSensitive as input is loaded from cache: #expectedOutcome"() {
@@ -42,7 +40,7 @@ abstract class AbstractPathSensitivityIntegrationSpec extends AbstractIntegratio
         when:
         execute "test"
         then:
-        result.assertTaskNotSkipped(":test")
+        result.assertTaskExecuted(":test")
 
         when:
         assert file("sources/input.txt").renameTo(file("sources/input-renamed.txt"))
@@ -78,7 +76,7 @@ abstract class AbstractPathSensitivityIntegrationSpec extends AbstractIntegratio
         when:
         execute "test"
         then:
-        result.assertTaskNotSkipped(":test")
+        result.assertTaskExecuted(":test")
 
         when:
         assert file("src/data1/input.txt").renameTo(file("src/data2/input.txt"))
@@ -111,7 +109,7 @@ abstract class AbstractPathSensitivityIntegrationSpec extends AbstractIntegratio
         when:
         execute "test"
         then:
-        result.assertTaskNotSkipped(":test")
+        result.assertTaskExecuted(":test")
 
         when:
         assert file("src").renameTo(file("source"))

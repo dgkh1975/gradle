@@ -17,12 +17,11 @@
 package org.gradle.initialization
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.integtests.fixtures.executer.GradleContextualExecuter
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 import org.gradle.util.SetSystemProperties
 import org.junit.Rule
-import spock.lang.IgnoreIf
 import spock.lang.Issue
-import spock.lang.Unroll
 
 class PropertiesLoaderIntegrationTest extends AbstractIntegrationSpec {
     @Rule SetSystemProperties systemProperties = new SetSystemProperties()
@@ -32,19 +31,20 @@ class PropertiesLoaderIntegrationTest extends AbstractIntegrationSpec {
         file('gradle.properties') << """
 org.gradle.configureondemand=true
 """
-        buildFile << """
-task assertCodEnabled {
-    doLast {
-        assert gradle.startParameter.configureOnDemand
-    }
-}
+        buildFile """
+            def codStatus = provider { gradle.startParameter.configureOnDemand }
+            task assertCodEnabled {
+                doLast {
+                    assert codStatus.get()
+                }
+            }
 
-task assertCodDisabled {
-    doLast {
-        assert !gradle.startParameter.configureOnDemand
-    }
-}
-"""
+            task assertCodDisabled {
+                doLast {
+                    assert !codStatus.get()
+                }
+            }
+        """
 
         then:
         succeeds ':assertCodEnabled'
@@ -82,23 +82,24 @@ task printSystemProp {
         outputContains('mySystemProp=commandline')
     }
 
-    @IgnoreIf({ GradleContextualExecuter.embedded }) // needs to run Gradle from command line
+    @Requires(TestExecutionPreconditions.NotEmbeddedExecutor) // needs to run Gradle from command line
     def "build property set on command line takes precedence over jvm args"() {
         when:
         executer.withEnvironmentVars 'GRADLE_OPTS': '-Dorg.gradle.configureondemand=true'
 
-        buildFile << """
-task assertCodEnabled {
-    doLast {
-        assert gradle.startParameter.configureOnDemand
-    }
-}
+        buildFile """
+            def codStatus = provider { gradle.startParameter.configureOnDemand }
+            task assertCodEnabled {
+                doLast {
+                    assert codStatus.get()
+                }
+            }
 
-task assertCodDisabled {
-    doLast {
-        assert !gradle.startParameter.configureOnDemand
-    }
-}
+            task assertCodDisabled {
+                doLast {
+                    assert !codStatus.get()
+                }
+            }
 """
 
         then:
@@ -111,7 +112,7 @@ task assertCodDisabled {
         succeeds ':assertCodDisabled'
     }
 
-    @IgnoreIf({ GradleContextualExecuter.embedded }) // needs to run Gradle from command line
+    @Requires(TestExecutionPreconditions.NotEmbeddedExecutor) // needs to run Gradle from command line
     def "system property set on command line takes precedence over jvm args"() {
         given:
         executer.withEnvironmentVars 'GRADLE_OPTS': '-DmySystemProp=jvmarg'
@@ -176,7 +177,7 @@ task printSystemProp {
         outputContains("myProp=fromEnv2")
     }
 
-    @IgnoreIf({ GradleContextualExecuter.embedded })
+    @Requires(TestExecutionPreconditions.NotEmbeddedExecutor)
     def "properties can be distributed as part of a custom Gradle installation"() {
         given:
         requireIsolatedGradleDistribution()
@@ -199,7 +200,6 @@ task printSystemProp {
         executer.withArguments("--stop", "--info").run()
     }
 
-    @Unroll
     @Issue("https://github.com/gradle/gradle/issues/12122")
     def "build property with invalid property name ('#property') does not fail the build"() {
         given:

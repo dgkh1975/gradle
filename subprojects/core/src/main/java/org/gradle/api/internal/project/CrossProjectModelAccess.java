@@ -16,24 +16,124 @@
 
 package org.gradle.api.internal.project;
 
-import org.gradle.internal.service.scopes.Scopes;
+import org.gradle.api.Project;
+import org.gradle.api.internal.GradleInternal;
+import org.gradle.api.internal.tasks.TaskDependencyUsageTracker;
+import org.gradle.execution.taskgraph.TaskExecutionGraphInternal;
+import org.gradle.internal.metaobject.HierarchicalDynamicObject;
+import org.gradle.internal.service.scopes.Scope;
 import org.gradle.internal.service.scopes.ServiceScope;
+import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
+import java.util.Map;
 import java.util.Set;
 
 /**
- * Mediates access across project boundaries.
+ * Mediates access to other projects, across project boundaries, within a single build.
  */
-@ServiceScope(Scopes.Build.class)
+@ServiceScope(Scope.Build.class)
 public interface CrossProjectModelAccess {
+
     /**
-     * @param path absolute path
+     * Locates the project with the given path.
+     *
+     * @param referrer The project from which the return value will be used.
+     * @param path An absolute path to the requested project, relative to the current build.
+     *
+     * @throws IllegalArgumentException If {@code path} is not absolute.
+     */
+    @Nullable ProjectInternal findProject(ProjectIdentity referrer, Path path);
+
+    /**
+     * Wrap the given project to ensure mutable state access is correctly handled across project boundaries,
+     * according to the current cross-project model access policy.
+     *
+     * <p>
+     * If possible, callers should prefer {@link #accessFromState(ProjectIdentity, ProjectState)},
+     * as it does not require a reference to the mutable state of the project.
+     * </p>
+     *
+     * @param referrer The project from which the return value will be used.
+     */
+    ProjectInternal access(ProjectIdentity referrer, ProjectInternal project);
+
+    /**
+     * Variant of {@link #access(ProjectIdentity, ProjectInternal)} that takes a {@link ProjectState},
+     * to avoid needing to have a reference to the mutable state of the project in the caller.
+     *
+     * <p>
+     * This should be preferred over {@code access(ProjectIdentity, ProjectInternal)} where possible.
+     * </p>
+     *
+     * @param referrer The project from which the return value will be used.
+     */
+    ProjectInternal accessFromState(ProjectIdentity referrer, ProjectState projectState);
+
+    /**
+     * @param referrer The project from which the return value will be used.
+     * @param target The project to get the children of.
+     */
+    Map<String, Project> getChildProjects(ProjectIdentity referrer, ProjectState target);
+
+    /**
+     * @param referrer The project from which the return value will be used.
+     * @param target The project to get the subprojects of.
+     */
+    Set<? extends ProjectInternal> getSubprojects(ProjectIdentity referrer, ProjectIdentity target);
+
+    /**
+     * @param referrer The project from which the return value will be used.
+     * @param target The project to get all projects of.
+     */
+    Set<? extends ProjectInternal> getAllprojects(ProjectIdentity referrer, ProjectIdentity target);
+
+    /**
+     * Given the request from the referrer to access the specified Gradle instance, returns
+     * an instance that behaves correctly regarding cross project model access.
+     *
+     * @param referrer The project that is going to use the Gradle instance.
+     * @param gradle The Gradle instance that the project has direct access to.
+     * @return A Gradle instance that implements correct cross-project model access.
+     */
+    GradleInternal gradleInstanceForProject(ProjectIdentity referrer, GradleInternal gradle);
+
+    /**
+     * Provides an implementation of a tracker that handles the usages of TaskDependency API in the context
+     * of the current project. The tracker checks that the usages for possible violation of cross-project model access restriction.
+     *
+     * @param referrer The project providing the context.
      */
     @Nullable
-    ProjectInternal findProject(ProjectInternal referrer, ProjectInternal relativeTo, String path);
+    TaskDependencyUsageTracker taskDependencyUsageTracker(ProjectIdentity referrer);
 
-    Set<? extends ProjectInternal> getSubprojects(ProjectInternal referrer, ProjectInternal relativeTo);
+    /**
+     * Provides an implementation of {@code TaskExecutionGraph} such that it handles access to the
+     * tasks in the other projects according to the current cross-project model access policy.
+     *
+     * @param referrer The project that views the task graph.
+     * @return A task graph instance that implements correct cross-project model access.
+     */
+    TaskExecutionGraphInternal taskGraphForProject(ProjectIdentity referrer, TaskExecutionGraphInternal taskGraph);
 
-    Set<? extends ProjectInternal> getAllprojects(ProjectInternal referrer, ProjectInternal relativeTo);
+    /**
+     * Produces a {@code DynamicObject} for the inherited scope from the parent project of the specified project, behaving correctly
+     * regarding cross-project model access.
+     *
+     * <p>The contract differs between Vintage and Isolated Projects builds:
+     * <ul>
+     *   <li><b>Vintage</b>: returns the parent project's inherited scope. The caller wires this object into the child's
+     *       dynamic scope so that an unresolved reference in the child walks up the parent projects. The walk is
+     *       deprecated and emits a warning at the lookup site, but still succeeds for compatibility.
+     *   <li><b>Isolated Projects</b>: returns {@code null}. The caller must skip parent wiring entirely; an unresolved
+     *       reference in the child fails with the standard {@code MissingPropertyException} /
+     *       {@code MissingMethodException}, matching the eventual Gradle 10 behavior.
+     * </ul>
+     *
+     * @param referrer The project that needs to get an inherited scope dynamic object from its parent.
+     * @return The parent's inherited scope, or {@code null} if there is no parent project or parent-walk is disabled
+     * (Isolated Projects). The returned object handles cross-project model access according to the current policy.
+     */
+    @Nullable
+    HierarchicalDynamicObject parentProjectDynamicInheritedScope(ProjectState referrer);
 }

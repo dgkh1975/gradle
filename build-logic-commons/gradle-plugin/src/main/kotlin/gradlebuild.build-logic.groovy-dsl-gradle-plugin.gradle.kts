@@ -17,22 +17,31 @@
 plugins {
     id("java-library")
     id("groovy-gradle-plugin")
+    id("gradlebuild.build-platform")
     id("gradlebuild.code-quality")
+    id("gradlebuild.ci-reporting")
+    id("gradlebuild.test-retry")
+    id("gradlebuild.private-javadoc")
 }
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_1_8
-    targetCompatibility = JavaVersion.VERSION_1_8
-}
+val buildLibs = project.versionCatalogs.named("buildLibs")
 
 dependencies {
-    api(platform(project(":build-platform")))
-    implementation("gradlebuild:code-quality")
+    implementation("gradlebuild:gradle-plugin")
 
     implementation(localGroovy())
-    testImplementation("org.spockframework:spock-core")
-    testImplementation("net.bytebuddy:byte-buddy")
-    testImplementation("org.objenesis:objenesis")
+}
+
+@Suppress("UnstableApiUsage")
+testing {
+    suites {
+        named<JvmTestSuite>("test") {
+            dependencies {
+                implementation(buildLibs.findLibrary("bytebuddy").get())
+                implementation(buildLibs.findLibrary("objenesis").get())
+            }
+        }
+    }
 }
 
 tasks.withType<GroovyCompile>().configureEach {
@@ -45,17 +54,24 @@ tasks.withType<GroovyCompile>().configureEach {
         encoding = "utf-8"
         compilerArgs = mutableListOf("-Xlint:-options", "-Xlint:-path")
     }
-    val vendor = System.getProperty("java.vendor")
-    inputs.property("javaInstallation", "$vendor ${JavaVersion.current()}")
 }
 
 tasks.withType<Test>().configureEach {
-    if (JavaVersion.current().isJava9Compatible) {
+    val testVersionProvider = javaLauncher.map { it.metadata.languageVersion }
+    jvmArgumentProviders.add(CommandLineArgumentProvider {
         //allow ProjectBuilder to inject legacy types into the system classloader
-        jvmArgs("--add-opens", "java.base/java.lang=ALL-UNNAMED")
-        jvmArgs("--illegal-access=deny")
-    }
-    useJUnitPlatform()
+        if (testVersionProvider.get().canCompileOrRun(9)) {
+            listOf("--add-opens", "java.base/java.lang=ALL-UNNAMED")
+        } else {
+            emptyList()
+        }
+    })
+    jvmArgumentProviders.add(CommandLineArgumentProvider {
+        val testVersion = testVersionProvider.get()
+        if (testVersion.canCompileOrRun(9) && !testVersion.canCompileOrRun(17)) {
+            listOf("--illegal-access=deny")
+        } else {
+            emptyList()
+        }
+    })
 }
-
-

@@ -17,9 +17,17 @@
 package org.gradle.internal.buildevents
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 
 class BuildFailureIntegrationTest extends AbstractIntegrationSpec {
+
+    @Requires(value = TestExecutionPreconditions.NotEmbeddedExecutor, reason = "explicitly requests a daemon")
     def "still prints errors when exception misbehaves"() {
+        // When running in-process, the NPE propagates out of the test fixtures
+        executer.requireIsolatedDaemons()
+        executer.requireDaemon()
+
         buildFile << """
 class BadException extends Exception {
    String getMessage() {
@@ -32,6 +40,22 @@ throw new BadException()
         when:
         fails("help")
         then:
-        result.assertHasErrorOutput("Unable to get message for failure of type BadException due to null")
+        failure.assertHasDescription("A problem occurred evaluating root project")
+        failure.assertHasCause("Unable to get message for failure of type BadException due to null")
+    }
+
+    def "can handle circular exception"() {
+        buildFile << """
+            Exception selfReferencingException = new Exception("BOOM self")
+            selfReferencingException.initCause(new Exception("BOOM cause", selfReferencingException))
+            throw selfReferencingException
+        """
+
+        when:
+        fails("help", "-s")
+
+        then:
+        failureCauseContains("BOOM self")
+        result.assertHasErrorOutput("Caused by: java.lang.Throwable: [CIRCULAR REFERENCE: java.lang.Exception: BOOM self]")
     }
 }

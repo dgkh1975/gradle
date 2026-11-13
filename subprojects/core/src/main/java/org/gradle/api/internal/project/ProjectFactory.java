@@ -13,85 +13,64 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
 package org.gradle.api.internal.project;
 
-import org.gradle.api.initialization.ProjectDescriptor;
 import org.gradle.api.internal.GradleInternal;
 import org.gradle.api.internal.initialization.ClassLoaderScope;
 import org.gradle.groovy.scripts.ScriptSource;
 import org.gradle.groovy.scripts.TextResourceScriptSource;
 import org.gradle.initialization.DefaultProjectDescriptor;
 import org.gradle.initialization.DependenciesAccessors;
-import org.gradle.internal.FileUtils;
-import org.gradle.internal.deprecation.DeprecationLogger;
+import org.gradle.internal.build.BuildState;
 import org.gradle.internal.management.DependencyResolutionManagementInternal;
+import org.gradle.internal.project.ImmutableProjectDescriptor;
 import org.gradle.internal.reflect.Instantiator;
 import org.gradle.internal.resource.TextFileResourceLoader;
 import org.gradle.internal.resource.TextResource;
+import org.gradle.internal.scripts.ProjectScopedScriptResolution;
+import org.gradle.internal.service.scopes.ServiceRegistryFactory;
 import org.gradle.util.internal.NameValidator;
 
-import javax.annotation.Nullable;
 import java.io.File;
 
 public class ProjectFactory implements IProjectFactory {
     private final Instantiator instantiator;
     private final TextFileResourceLoader textFileResourceLoader;
+    private final ProjectScopedScriptResolution scriptResolution;
 
-    public ProjectFactory(Instantiator instantiator, TextFileResourceLoader textFileResourceLoader) {
+    public ProjectFactory(Instantiator instantiator, TextFileResourceLoader textFileResourceLoader, ProjectScopedScriptResolution scriptResolution) {
         this.instantiator = instantiator;
         this.textFileResourceLoader = textFileResourceLoader;
+        this.scriptResolution = scriptResolution;
     }
 
     @Override
-    public ProjectInternal createProject(GradleInternal gradle, ProjectDescriptor projectDescriptor, ProjectState owner, @Nullable ProjectInternal parent, ClassLoaderScope selfClassLoaderScope, ClassLoaderScope baseClassLoaderScope) {
-        File buildFile = projectDescriptor.getBuildFile();
+    public ProjectInternal createProject(
+        BuildState build,
+        ImmutableProjectDescriptor projectDescriptor,
+        ProjectState owner,
+        ServiceRegistryFactory serviceRegistryFactory,
+        ClassLoaderScope selfClassLoaderScope,
+        ClassLoaderScope baseClassLoaderScope
+    ) {
+        // Need to wrap resolution of the build file to associate the build file with the correct project
+        File buildFile = scriptResolution.resolveScriptsForProject(owner.getIdentity(), projectDescriptor::getBuildFile);
         TextResource resource = textFileResourceLoader.loadFile("build file", buildFile);
         ScriptSource source = new TextResourceScriptSource(resource);
         DefaultProject project = instantiator.newInstance(DefaultProject.class,
-            projectDescriptor.getName(),
-            parent,
-            projectDescriptor.getProjectDir(),
             buildFile,
             source,
-            gradle,
             owner,
-            gradle.getServiceRegistryFactory(),
+            serviceRegistryFactory,
             selfClassLoaderScope,
             baseClassLoaderScope
         );
+        GradleInternal gradle = build.getMutableModel();
+        gradle.getServices().get(DependencyResolutionManagementInternal.class).configureProject(project);
         project.beforeEvaluate(p -> {
-            nagUserAboutDeprecatedFlatProjectLayout(project);
             NameValidator.validate(project.getName(), "project name", DefaultProjectDescriptor.INVALID_NAME_IN_INCLUDE_HINT);
             gradle.getServices().get(DependenciesAccessors.class).createExtensions(project);
-            gradle.getServices().get(DependencyResolutionManagementInternal.class).configureProject(project);
         });
-
-        if (parent != null) {
-            parent.addChildProject(project);
-        }
-        gradle.getProjectRegistry().addProject(project);
         return project;
-    }
-
-    private void nagUserAboutDeprecatedFlatProjectLayout(DefaultProject project) {
-        File rootDir = FileUtils.canonicalize(project.getRootProject().getProjectDir());
-        File projectDir = FileUtils.canonicalize(project.getProjectDir());
-        if (!isParentDir(rootDir, projectDir)) {
-            DeprecationLogger.deprecateBehaviour(String.format("Subproject '%s' has location '%s' which is outside of the project root.", project.getPath(), project.getProjectDir().getAbsolutePath()))
-                .willBeRemovedInGradle8()
-                .withUpgradeGuideSection(7, "deprecated_flat_project_structure")
-                .nagUser();
-        }
-    }
-
-    private static boolean isParentDir(File parent, @Nullable File f) {
-        if (f == null) {
-            return false;
-        } else if (f.equals(parent)) {
-            return true;
-        } else {
-            return isParentDir(parent, f.getParentFile());
-        }
     }
 }

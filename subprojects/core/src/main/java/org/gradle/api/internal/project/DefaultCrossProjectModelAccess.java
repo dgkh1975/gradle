@@ -16,28 +16,111 @@
 
 package org.gradle.api.internal.project;
 
+import org.gradle.api.Project;
+import org.gradle.api.internal.GradleInternal;
+import org.gradle.api.internal.tasks.TaskDependencyUsageTracker;
+import org.gradle.execution.taskgraph.TaskExecutionGraphInternal;
+import org.gradle.internal.build.BuildProjectRegistry;
+import org.gradle.internal.metaobject.HierarchicalDynamicObject;
+import org.gradle.internal.reflect.Instantiator;
+import org.gradle.invocation.GradleLifecycleActionExecutor;
+import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
+
+import java.util.LinkedHashSet;
+import java.util.Map;
 import java.util.Set;
-import java.util.TreeSet;
+import java.util.stream.Collectors;
 
 public class DefaultCrossProjectModelAccess implements CrossProjectModelAccess {
-    private final ProjectRegistry<ProjectInternal> projectRegistry;
 
-    public DefaultCrossProjectModelAccess(ProjectRegistry<ProjectInternal> projectRegistry) {
+    private final BuildProjectRegistry projectRegistry;
+    private final Instantiator instantiator;
+    private final GradleLifecycleActionExecutor gradleLifecycleActionExecutor;
+
+    public DefaultCrossProjectModelAccess(
+        BuildProjectRegistry projectRegistry,
+        Instantiator instantiator,
+        GradleLifecycleActionExecutor gradleLifecycleActionExecutor
+    ) {
         this.projectRegistry = projectRegistry;
+        this.instantiator = instantiator;
+        this.gradleLifecycleActionExecutor = gradleLifecycleActionExecutor;
     }
 
     @Override
-    public ProjectInternal findProject(ProjectInternal referrer, ProjectInternal relativeTo, String path) {
-        return projectRegistry.getProject(relativeTo.absoluteProjectPath(path));
+    public ProjectInternal access(ProjectIdentity referrer, ProjectInternal project) {
+        return LifecycleAwareProject.wrap(project, referrer, instantiator, gradleLifecycleActionExecutor);
     }
 
     @Override
-    public Set<? extends ProjectInternal> getSubprojects(ProjectInternal referrer, ProjectInternal relativeTo) {
-        return new TreeSet<>(projectRegistry.getSubProjects(relativeTo.getPath()));
+    public ProjectInternal accessFromState(ProjectIdentity referrer, ProjectState projectState) {
+        // This is safe without checking the lock as the mutable model is immediately wrapped in a thread-safe wrapper.
+        return access(referrer, projectState.getMutableModel());
     }
 
     @Override
-    public Set<? extends ProjectInternal> getAllprojects(ProjectInternal referrer, ProjectInternal relativeTo) {
-        return new TreeSet<>(projectRegistry.getAllProjects(relativeTo.getPath()));
+    @Nullable
+    public ProjectInternal findProject(ProjectIdentity referrer, Path path) {
+        if (!path.isAbsolute()) {
+            throw new IllegalArgumentException("Project path must be absolute");
+        }
+
+        ProjectState projectState = projectRegistry.findProject(path);
+        return projectState != null ? accessFromState(referrer, projectState) : null;
+    }
+
+    @Override
+    public Map<String, Project> getChildProjects(ProjectIdentity referrer, ProjectState target) {
+        return target.getChildProjects().stream().collect(
+            Collectors.toMap(
+                ProjectState::getName,
+                projectState -> accessFromState(referrer, projectState)
+            )
+        );
+    }
+
+    @Override
+    public Set<? extends ProjectInternal> getSubprojects(ProjectIdentity referrer, ProjectIdentity target) {
+        ProjectState targetProjectState = projectRegistry.getProject(target.getProjectPath());
+        Set<ProjectInternal> subprojects = new LinkedHashSet<>();
+        for (ProjectState subproject : ProjectOrderingUtil.orderedSubprojectsOf(targetProjectState)) {
+            subprojects.add(accessFromState(referrer, subproject));
+        }
+        return subprojects;
+    }
+
+    @Override
+    public Set<? extends ProjectInternal> getAllprojects(ProjectIdentity referrer, ProjectIdentity target) {
+        ProjectState targetProjectState = projectRegistry.getProject(target.getProjectPath());
+        Set<ProjectInternal> allProjects = new LinkedHashSet<>();
+        for (ProjectState subproject : ProjectOrderingUtil.orderedAllProjectsOf(targetProjectState)) {
+            allProjects.add(accessFromState(referrer, subproject));
+        }
+        return allProjects;
+    }
+
+    @Override
+    public GradleInternal gradleInstanceForProject(ProjectIdentity referrer, GradleInternal gradle) {
+        return gradle;
+    }
+
+    @Override
+    @Nullable
+    public TaskDependencyUsageTracker taskDependencyUsageTracker(ProjectIdentity referrer) {
+        return null;
+    }
+
+    @Override
+    public TaskExecutionGraphInternal taskGraphForProject(ProjectIdentity referrer, TaskExecutionGraphInternal taskGraph) {
+        return taskGraph;
+    }
+
+    @Override
+    @Nullable
+    public HierarchicalDynamicObject parentProjectDynamicInheritedScope(ProjectState referrer) {
+        ProjectState parent = referrer.getParent();
+        // We purposefully leak mutable state here, as we're not in IP so it's safe.
+        return parent != null ? parent.fromMutableState(ProjectInternal::getInheritedScope) : null;
     }
 }

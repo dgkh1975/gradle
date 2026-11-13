@@ -22,13 +22,26 @@ import org.gradle.api.DefaultTask
 import org.gradle.api.tasks.Internal
 import org.gradle.work.DisableCachingByDefault
 import java.io.File
+import kotlin.io.path.invariantSeparatorsPathString
 
 
 @DisableCachingByDefault(because = "Abstract super-class, not to be instantiated directly")
 abstract class SubprojectsInfo : DefaultTask() {
 
     private
+    val rootPath = project.layout.projectDirectory.asFile.toPath()
+
+    private
+    val platformsFolder = project.layout.projectDirectory.dir("platforms")
+
+    private
     val subprojectsFolder = project.layout.projectDirectory.dir("subprojects")
+
+    private
+    val testingFolder = project.layout.projectDirectory.dir("testing")
+
+    private
+    val packingFolder = project.layout.projectDirectory.dir("packaging")
 
     @get:Internal
     protected
@@ -42,13 +55,23 @@ abstract class SubprojectsInfo : DefaultTask() {
     }
 
     private
+    fun generateSubprojectsDirectories(): List<File> {
+        val subprojectRoots = platformsFolder.asFile.listFiles(File::isDirectory)
+            .plus(subprojectsFolder.asFile)
+            .plus(testingFolder.asFile)
+            .plus(packingFolder.asFile)
+
+        return subprojectRoots.map { it.listFiles(File::isDirectory).asList() }.flatten()
+    }
+
+    private
     fun generateSubprojects(): List<GradleSubproject> {
-        return subprojectsFolder.asFile.listFiles(File::isDirectory)!!
+        return generateSubprojectsDirectories()
             .filter {
                 File(it, "build.gradle.kts").exists() ||
                     File(it, "build.gradle").exists()
             }
-            .sorted()
+            .sortedBy { it.name }
             .map(this::generateSubproject)
     }
 
@@ -57,13 +80,16 @@ abstract class SubprojectsInfo : DefaultTask() {
     fun generateSubproject(subprojectDir: File): GradleSubproject {
         return GradleSubproject(
             subprojectDir.name,
-            subprojectDir.name,
-            subprojectDir.hasDescendantDir("src/test"),
-            if (subprojectDir.name == "docs") true else subprojectDir.hasDescendantDir("src/integTest"),
-            subprojectDir.hasDescendantDir("src/crossVersionTest")
+            rootPath.relativize(subprojectDir.toPath()).invariantSeparatorsPathString,
+            subprojectDir.hasDescendantDirWithFiles("src/test"),
+            subprojectDir.hasDescendantDirWithFiles("src/integTest"),
+            subprojectDir.hasDescendantDirWithFiles("src/crossVersionTest")
         )
     }
 
     private
-    fun File.hasDescendantDir(descendant: String) = resolve(descendant).isDirectory
+    fun File.hasDescendantDirWithFiles(descendant: String): Boolean {
+        val dir = resolve(descendant)
+        return dir.isDirectory && dir.walk().any { it.isFile }
+    }
 }

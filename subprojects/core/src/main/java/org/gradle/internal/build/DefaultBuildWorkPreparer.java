@@ -19,12 +19,18 @@ package org.gradle.internal.build;
 import org.gradle.api.internal.GradleInternal;
 import org.gradle.execution.plan.ExecutionPlan;
 import org.gradle.execution.plan.ExecutionPlanFactory;
+import org.gradle.execution.plan.FinalizedExecutionPlan;
 import org.gradle.execution.taskgraph.TaskExecutionGraphInternal;
 import org.gradle.internal.execution.BuildOutputCleanupRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.function.Consumer;
 
 public class DefaultBuildWorkPreparer implements BuildWorkPreparer {
+
+    private static final Logger LOGGER = LoggerFactory.getLogger(DefaultBuildWorkPreparer.class);
+
     private final ExecutionPlanFactory executionPlanFactory;
 
     public DefaultBuildWorkPreparer(ExecutionPlanFactory executionPlanFactory) {
@@ -43,10 +49,22 @@ public class DefaultBuildWorkPreparer implements BuildWorkPreparer {
     }
 
     @Override
-    public void finalizeWorkGraph(GradleInternal gradle, ExecutionPlan plan) {
+    public FinalizedExecutionPlan finalizeWorkGraph(GradleInternal gradle, ExecutionPlan plan) {
         TaskExecutionGraphInternal taskGraph = gradle.getTaskGraph();
-        taskGraph.populate(plan);
+        if (gradle.getStartParameter().isContinueOnFailure()) {
+            plan.setContinueOnFailure(true);
+        }
+        FinalizedExecutionPlan finalizedExecutionPlan = plan.finalizePlan();
+
+        if (LOGGER.isInfoEnabled()) {
+            LOGGER.info("Tasks to be executed: {}", plan.getContents().getTasks());
+            LOGGER.info("Tasks that were excluded: {}", plan.getContents().getFilteredTasks());
+        }
+
+        taskGraph.populate(finalizedExecutionPlan);
         BuildOutputCleanupRegistry buildOutputCleanupRegistry = gradle.getServices().get(BuildOutputCleanupRegistry.class);
         buildOutputCleanupRegistry.resolveOutputs();
+        return finalizedExecutionPlan;
     }
+
 }

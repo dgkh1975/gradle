@@ -18,16 +18,16 @@ package org.gradle.api.internal.changedetection.changes;
 
 import org.gradle.StartParameter;
 import org.gradle.api.InvalidUserCodeException;
-import org.gradle.api.NonNullApi;
 import org.gradle.api.internal.TaskInternal;
 import org.gradle.api.internal.changedetection.TaskExecutionMode;
 import org.gradle.api.internal.changedetection.TaskExecutionModeResolver;
-import org.gradle.api.internal.project.taskfactory.AbstractIncrementalTaskAction;
+import org.gradle.api.internal.project.taskfactory.IncrementalTaskAction;
 import org.gradle.api.internal.tasks.InputChangesAwareTaskAction;
 import org.gradle.api.internal.tasks.properties.TaskProperties;
 import org.gradle.api.specs.AndSpec;
+import org.jspecify.annotations.NullMarked;
 
-@NonNullApi
+@NullMarked
 public class DefaultTaskExecutionModeResolver implements TaskExecutionModeResolver {
 
     private final StartParameter startParameter;
@@ -38,8 +38,8 @@ public class DefaultTaskExecutionModeResolver implements TaskExecutionModeResolv
 
     @Override
     public TaskExecutionMode getExecutionMode(TaskInternal task, TaskProperties properties) {
-        if (properties.hasUntrackedProperties()) {
-            return TaskExecutionMode.UNTRACKED;
+        if (task.getReasonNotToTrackState().isPresent()) {
+            return DefaultTaskExecutionMode.untracked(task.getReasonNotToTrackState().get());
         }
         // Only false if no declared outputs AND no Task.upToDateWhen spec. We force to true for incremental tasks.
         AndSpec<? super TaskInternal> upToDateSpec = task.getOutputs().getUpToDateSpec();
@@ -47,24 +47,24 @@ public class DefaultTaskExecutionModeResolver implements TaskExecutionModeResolv
             if (requiresInputChanges(task)) {
                 throw new InvalidUserCodeException("You must declare outputs or use `TaskOutputs.upToDateWhen()` when using the incremental task API");
             } else {
-                return TaskExecutionMode.NO_OUTPUTS;
+                return DefaultTaskExecutionMode.noOutputs();
             }
         }
 
         if (startParameter.isRerunTasks()) {
-            return TaskExecutionMode.RERUN_TASKS_ENABLED;
+            return DefaultTaskExecutionMode.rerunTasksEnabled();
         }
 
         if (!upToDateSpec.isSatisfiedBy(task)) {
-            return TaskExecutionMode.UP_TO_DATE_WHEN_FALSE;
+            return DefaultTaskExecutionMode.upToDateWhenFalse();
         }
 
-        return TaskExecutionMode.INCREMENTAL;
+        return DefaultTaskExecutionMode.incremental();
     }
 
     private static boolean requiresInputChanges(TaskInternal task) {
         for (InputChangesAwareTaskAction taskAction : task.getTaskActions()) {
-            if (taskAction instanceof AbstractIncrementalTaskAction) {
+            if (taskAction instanceof IncrementalTaskAction) {
                 return true;
             }
         }

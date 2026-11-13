@@ -20,20 +20,20 @@ import org.gradle.api.ProjectEvaluationListener;
 import org.gradle.api.internal.initialization.ClassLoaderScope;
 import org.gradle.api.internal.plugins.PluginAwareInternal;
 import org.gradle.api.internal.project.ProjectInternal;
-import org.gradle.api.internal.project.ProjectRegistry;
+import org.gradle.api.internal.project.ProjectState;
 import org.gradle.api.invocation.Gradle;
 import org.gradle.execution.taskgraph.TaskExecutionGraphInternal;
+import org.gradle.initialization.SettingsState;
 import org.gradle.internal.build.BuildState;
 import org.gradle.internal.build.PublicBuildPath;
 import org.gradle.internal.composite.IncludedBuildInternal;
 import org.gradle.internal.scan.UsedByScanPlugin;
 import org.gradle.internal.service.ServiceRegistry;
-import org.gradle.internal.service.scopes.Scopes;
-import org.gradle.internal.service.scopes.ServiceRegistryFactory;
+import org.gradle.internal.service.scopes.Scope;
 import org.gradle.internal.service.scopes.ServiceScope;
 import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.util.Collection;
 import java.util.List;
 import java.util.function.Supplier;
@@ -43,13 +43,9 @@ import java.util.function.Supplier;
  * consumption.
  */
 @UsedByScanPlugin
-@ServiceScope(Scopes.Build.class)
+// Public `Gradle` service shadowed at the project scope by the IP reporting wrapper
+@ServiceScope({Scope.Build.class, Scope.Project.class})
 public interface GradleInternal extends Gradle, PluginAwareInternal {
-    /**
-     * {@inheritDoc}
-     */
-    @Override
-    ProjectInternal getRootProject() throws IllegalStateException;
 
     @Override
     @Nullable
@@ -71,9 +67,19 @@ public interface GradleInternal extends Gradle, PluginAwareInternal {
     TaskExecutionGraphInternal getTaskGraph();
 
     /**
-     * Returns the default project. This is used to resolve relative names and paths provided on the UI.
+     * Returns the state of the default project. This is used to resolve relative names and paths provided on the UI.
+     *
+     * @throws IllegalStateException when the build is not loaded yet, see {@link #setDefaultProjectState(ProjectState)}
      */
-    ProjectInternal getDefaultProject();
+    ProjectState getDefaultProjectState() throws IllegalStateException;
+
+    /**
+     * Called by the BuildLoader after the default project is determined. Until the BuildLoader
+     * is executed, {@link #getDefaultProjectState()} will throw {@link IllegalStateException}.
+     *
+     * @param defaultProject The state of the default project for this build.
+     */
+    void setDefaultProjectState(ProjectState defaultProject);
 
     /**
      * Returns the broadcaster for {@link ProjectEvaluationListener} events for this build
@@ -84,7 +90,7 @@ public interface GradleInternal extends Gradle, PluginAwareInternal {
      * The settings for this build.
      *
      * @return the settings for this build
-     * @throws IllegalStateException when the build is not loaded yet, see {@link #setSettings(SettingsInternal)}
+     * @throws IllegalStateException when the build is not loaded yet, see {@link #attachSettings(SettingsState)}
      */
     SettingsInternal getSettings() throws IllegalStateException;
 
@@ -94,23 +100,7 @@ public interface GradleInternal extends Gradle, PluginAwareInternal {
      *
      * @param settings The settings for this build.
      */
-    void setSettings(SettingsInternal settings);
-
-    /**
-     * Called by the BuildLoader after the default project is determined.  Until the BuildLoader
-     * is executed, {@link #getDefaultProject()} will return null.
-     *
-     * @param defaultProject The default project for this build.
-     */
-    void setDefaultProject(ProjectInternal defaultProject);
-
-    /**
-     * Called by the BuildLoader after the root project is determined.  Until the BuildLoader
-     * is executed, {@link #getRootProject()} will throw {@link IllegalStateException}.
-     *
-     * @param rootProject The root project for this build.
-     */
-    void setRootProject(ProjectInternal rootProject);
+    void attachSettings(@Nullable SettingsState settings);
 
     /**
      * Returns the broadcaster for {@link BuildListener} events
@@ -120,8 +110,6 @@ public interface GradleInternal extends Gradle, PluginAwareInternal {
     @UsedByScanPlugin
     ServiceRegistry getServices();
 
-    ServiceRegistryFactory getServiceRegistryFactory();
-
     void setClassLoaderScope(Supplier<? extends ClassLoaderScope> classLoaderScope);
 
     ClassLoaderScope getClassLoaderScope();
@@ -130,10 +118,10 @@ public interface GradleInternal extends Gradle, PluginAwareInternal {
 
     /**
      * Returns a unique path for this build within the current Gradle invocation.
+     * <p>
+     * Prefer {@link BuildState#getIdentityPath()}.
      */
     Path getIdentityPath();
-
-    String contextualize(String description);
 
     PublicBuildPath getPublicBuildPath();
 
@@ -161,8 +149,16 @@ public interface GradleInternal extends Gradle, PluginAwareInternal {
     @Override
     StartParameterInternal getStartParameter();
 
-    ProjectRegistry<ProjectInternal> getProjectRegistry();
-
     // A separate property, as the public getter does not use a wildcard type and cannot be overridden
     List<? extends IncludedBuildInternal> includedBuilds();
+
+    /**
+     * Resets the lifecycle for this Gradle object.
+     */
+    void resetState();
+
+    // We technically don't need this overload, but some plugins using GradleInternal break at runtime if we remove it
+    // E.g. see https://github.com/quarkusio/quarkus/issues/54851
+    @Override
+    ProjectInternal getRootProject() throws IllegalStateException;
 }

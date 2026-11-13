@@ -16,73 +16,45 @@
 
 package org.gradle.api.services.internal;
 
-import com.google.common.collect.ImmutableList;
-import org.gradle.api.artifacts.component.BuildIdentifier;
 import org.gradle.api.internal.provider.AbstractMinimalProvider;
+import org.gradle.api.internal.provider.DefaultProperty;
+import org.gradle.api.internal.provider.ProviderInternal;
+import org.gradle.api.internal.provider.ValueSanitizer;
+import org.gradle.api.provider.Provider;
 import org.gradle.api.services.BuildService;
 import org.gradle.api.services.BuildServiceParameters;
-import org.gradle.internal.Try;
-import org.gradle.internal.instantiation.InstantiationScheme;
-import org.gradle.internal.isolated.IsolationScheme;
-import org.gradle.internal.isolation.IsolatableFactory;
+import org.gradle.api.services.BuildServiceRegistry;
+import org.gradle.internal.build.BuildIdentity;
+import org.gradle.internal.Cast;
+import org.gradle.internal.DisplayName;
 import org.gradle.internal.service.ServiceLookup;
-import org.gradle.internal.service.ServiceRegistry;
 import org.gradle.internal.state.Managed;
+import org.jspecify.annotations.NonNull;
 
-import javax.annotation.Nullable;
+import static org.gradle.internal.Cast.uncheckedCast;
 
-// TODO - complain when used at configuration time, except when opted in to this
-public class BuildServiceProvider<T extends BuildService<P>, P extends BuildServiceParameters> extends AbstractMinimalProvider<T> implements Managed {
-    private final BuildIdentifier buildIdentifier;
-    private final String name;
-    private final Class<T> implementationType;
-    private final IsolationScheme<BuildService, BuildServiceParameters> isolationScheme;
-    private final InstantiationScheme instantiationScheme;
-    private final IsolatableFactory isolatableFactory;
-    private final ServiceRegistry internalServices;
-    private final P parameters;
-    private Try<T> instance;
+/**
+ * A provider for build services that are registered or consumed.
+ */
+@SuppressWarnings("rawtypes")
+public abstract class BuildServiceProvider<T extends BuildService<P>, P extends BuildServiceParameters> extends AbstractMinimalProvider<T> implements Managed {
 
-    public BuildServiceProvider(BuildIdentifier buildIdentifier, String name, Class<T> implementationType, @Nullable P parameters, IsolationScheme<BuildService, BuildServiceParameters> isolationScheme, InstantiationScheme instantiationScheme, IsolatableFactory isolatableFactory, ServiceRegistry internalServices) {
-        this.buildIdentifier = buildIdentifier;
-        this.name = name;
-        this.implementationType = implementationType;
-        this.parameters = parameters;
-        this.isolationScheme = isolationScheme;
-        this.instantiationScheme = instantiationScheme;
-        this.isolatableFactory = isolatableFactory;
-        this.internalServices = internalServices;
+    static <T> Class<T> getProvidedType(Provider<T> provider) {
+        return ((ProviderInternal<T>) provider).getType();
     }
 
-    /**
-     * Returns the identifier for the build that owns this service.
-     */
-    public BuildIdentifier getBuildIdentifier() {
-        return buildIdentifier;
+    static BuildServiceProvider<?, ?> asBuildServiceProvider(Provider<? extends BuildService<?>> service) {
+        if (service instanceof BuildServiceProvider) {
+            return uncheckedCast(service);
+        }
+        throw new UnsupportedOperationException("Unexpected provider for a build service: " + service);
     }
 
-    public String getName() {
-        return name;
-    }
+    public interface Listener {
+        Listener EMPTY = provider -> {
+        };
 
-    public Class<T> getImplementationType() {
-        return implementationType;
-    }
-
-    @Nullable
-    public P getParameters() {
-        return parameters;
-    }
-
-    @Nullable
-    @Override
-    public Class<T> getType() {
-        return implementationType;
-    }
-
-    @Override
-    public boolean calculatePresence(ValueConsumer consumer) {
-        return true;
+        void beforeGet(BuildServiceProvider<?, ?> provider);
     }
 
     @Override
@@ -96,47 +68,79 @@ public class BuildServiceProvider<T extends BuildService<P>, P extends BuildServ
     }
 
     @Override
-    protected Value<? extends T> calculateOwnValue(ValueConsumer consumer) {
-        synchronized (this) {
-            if (instance == null) {
-                // TODO - extract some shared infrastructure to take care of instantiation (eg which services are visible, strict vs lenient, decorated or not?)
-                // TODO - should hold the project lock to do the isolation. Should work the same way as artifact transforms (a work node does the isolation, etc)
-                P isolatedParameters = isolatableFactory.isolate(parameters).isolate();
-                // TODO - reuse this in other places
-                ServiceLookup instantiationServices = isolationScheme.servicesForImplementation(
-                    isolatedParameters,
-                    internalServices,
-                    ImmutableList.of(),
-                    serviceType -> false
-                );
-                try {
-                    instance = Try.successful(instantiationScheme.withServices(instantiationServices).instantiator().newInstance(implementationType));
-                } catch (Exception e) {
-                    instance = Try.failure(new ServiceLifecycleException("Failed to create service '" + name + "'.", e));
-                }
-            }
-            return Value.of(instance.get());
-        }
-    }
-
-    @Override
     public ExecutionTimeValue<? extends T> calculateExecutionTimeValue() {
         return ExecutionTimeValue.changingValue(this);
     }
 
-    public void maybeStop() {
-        synchronized (this) {
-            if (instance != null) {
-                instance.ifSuccessful(t -> {
-                    if (t instanceof AutoCloseable) {
-                        try {
-                            ((AutoCloseable) t).close();
-                        } catch (Exception e) {
-                            throw new ServiceLifecycleException("Failed to stop service '" + name + "'.", e);
-                        }
-                    }
-                });
+    @SuppressWarnings("unused") // Used via instrumentation
+    public static <P extends BuildServiceParameters, T extends BuildService<P>> void setBuildServiceAsConvention(@NonNull DefaultProperty<T> property, ServiceLookup serviceLookup, String buildServiceName) {
+        BuildServiceRegistryInternal buildServiceRegistry = (BuildServiceRegistryInternal) serviceLookup.get(BuildServiceRegistry.class);
+        BuildServiceProvider<T, P> consumer = Cast.uncheckedCast(buildServiceRegistry.consume(buildServiceName, property.getType()));
+        property.convention(consumer);
+    }
+
+    public abstract BuildServiceDetails<T, P> getServiceDetails();
+
+    public abstract String getName();
+
+    @Override
+    @NonNull
+    public abstract Class<T> getType();
+
+    /**
+     * Returns the identifier for the build that owns this service.
+     */
+    public abstract BuildIdentity getBuildIdentity();
+
+    /**
+     * Are the given providers referring to the same service provider?
+     *
+     * This method does not distinguish between consumed/registered providers.
+     */
+    public static boolean isSameService(Provider<? extends BuildService<?>> thisProvider, Provider<? extends BuildService<?>> anotherProvider) {
+        if (thisProvider == anotherProvider) {
+            return true;
+        }
+        if (!(thisProvider instanceof BuildServiceProvider && anotherProvider instanceof BuildServiceProvider)) {
+            return false;
+        }
+        BuildServiceProvider thisBuildServiceProvider = (BuildServiceProvider) thisProvider;
+        BuildServiceProvider otherBuildServiceProvider = (BuildServiceProvider) anotherProvider;
+        String thisName = thisBuildServiceProvider.getName();
+        String otherName = otherBuildServiceProvider.getName();
+        if (!thisName.isEmpty() && !otherName.isEmpty() && !thisName.equals(otherName)) {
+            return false;
+        }
+        if (!isCompatibleServiceType(thisBuildServiceProvider, otherBuildServiceProvider)) {
+            return false;
+        }
+        return thisBuildServiceProvider.getBuildIdentity().equals(otherBuildServiceProvider.getBuildIdentity());
+    }
+
+    private static boolean isCompatibleServiceType(BuildServiceProvider thisBuildServiceProvider, BuildServiceProvider otherBuildServiceProvider) {
+        Class<?> otherType = otherBuildServiceProvider.getType();
+        Class<?> thisType = thisBuildServiceProvider.getType();
+        return otherType.isAssignableFrom(Cast.uncheckedCast(thisType));
+    }
+
+    @Override
+    public ProviderInternal<T> asSupplier(DisplayName owner, Class<? super T> targetType, ValueSanitizer<? super T> sanitizer) {
+        Class<T> selfType = getType();
+        if (selfType != null && !targetType.isAssignableFrom(selfType)) {
+            String targetTypeName = targetType.getName();
+            String selfTypeName = selfType.getName();
+            if (targetTypeName.equals(selfTypeName)) {
+                // This may happen when the same type is loaded by different classloaders.
+                targetTypeName = targetTypeName + " loaded with " + targetType.getClassLoader();
+                selfTypeName = selfTypeName + " loaded with " + selfType.getClassLoader();
+                // TODO: use problems API to have fancier report
+                throw new IllegalArgumentException(String.format("Cannot set the value of %s of type %s using a provider of type %s.\n" +
+                        "This can be caused by a plugin being applied to two sibling projects and then using a shared build service. " +
+                        "To fix this, use `@ServiceReference` or add the problematic plugin with `apply false` to the root build script.",
+                    owner.getDisplayName(), targetTypeName, selfTypeName
+                ));
             }
         }
+        return super.asSupplier(owner, targetType, sanitizer);
     }
 }

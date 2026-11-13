@@ -17,11 +17,13 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.BuildCacheOperationFixtures
 import org.gradle.integtests.fixtures.DirectoryBuildCacheFixture
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
 import org.gradle.test.fixtures.archive.TarTestFixture
 
 class CachedTaskIntegrationTest extends AbstractIntegrationSpec implements DirectoryBuildCacheFixture {
+
+    def cacheOperations = new BuildCacheOperationFixtures(executer, temporaryFolder)
 
     def "displays info about local build cache configuration"() {
         buildFile << defineCacheableTask()
@@ -29,7 +31,7 @@ class CachedTaskIntegrationTest extends AbstractIntegrationSpec implements Direc
         succeeds "cacheable", "--info"
 
         expect:
-        outputContains "Using local directory build cache for the root build (location = ${cacheDir}, removeUnusedEntriesAfter = 7 days)."
+        outputContains "Using local directory build cache for the root build (location = ${cacheDir}, remove unused entries = after 7 days)."
     }
 
     def "cache entry contains expected contents"() {
@@ -37,9 +39,10 @@ class CachedTaskIntegrationTest extends AbstractIntegrationSpec implements Direc
         when:
         withBuildCache().run("cacheable")
         then:
-        def cacheFiles = listCacheFiles()
-        cacheFiles.size() == 1
-        def cacheEntry = new TarTestFixture(cacheFiles[0])
+        def cacheKey = cacheOperations.getCacheKeyForTask(":cacheable")
+        def cacheFile = listCacheFiles().find { it.name == cacheKey }
+        cacheFile.exists()
+        def cacheEntry = new TarTestFixture(cacheFile)
         cacheEntry.assertContainsFile("tree-outputDir/output")
         def metadata = cacheEntry.content("METADATA")
         metadata.contains("type=")
@@ -47,10 +50,39 @@ class CachedTaskIntegrationTest extends AbstractIntegrationSpec implements Direc
         metadata.contains("gradleVersion=")
         metadata.contains("creationTime=")
         metadata.contains("executionTime=")
-        metadata.contains("rootPath=")
-        metadata.contains("operatingSystem=")
-        metadata.contains("hostName=")
-        metadata.contains("userName=")
+    }
+
+    def "storing in the cache can be disabled"() {
+        buildFile << defineCacheableTask()
+        buildFile << """
+            apply plugin: 'base'
+
+            def storeInCache = project.hasProperty('storeInCache')
+            cacheable.doLast {
+                if (!storeInCache) {
+                    outputs.doNotStoreInCache()
+                }
+            }
+        """
+        def taskPath = ":cacheable"
+
+        when:
+        withBuildCache().run(taskPath)
+
+        then:
+        cacheOperations.getCacheKeyForTaskOrNull(taskPath) == null
+
+        when:
+        withBuildCache().run("clean", "cacheable", "-PstoreInCache")
+
+        then:
+        listCacheFiles().any { it.name == cacheOperations.getCacheKeyForTask(taskPath) }
+
+        when:
+        withBuildCache().run("clean", "cacheable")
+
+        then:
+        skipped ":cacheable"
     }
 
     def "task is cacheable after previous failure"() {
@@ -75,7 +107,7 @@ class CachedTaskIntegrationTest extends AbstractIntegrationSpec implements Direc
         when:
         withBuildCache().run "foo"
         then:
-        result.assertTasksExecuted(":foo")
+        result.assertTasksScheduled(":foo")
 
         when:
         withBuildCache().run "foo"
@@ -83,7 +115,6 @@ class CachedTaskIntegrationTest extends AbstractIntegrationSpec implements Direc
         skipped ":foo"
     }
 
-    @ToBeFixedForConfigurationCache(because = "task wrongly up-to-date")
     def "task is loaded from cache when returning to already cached state after failure"() {
         buildFile << """
             task foo {
@@ -115,7 +146,6 @@ class CachedTaskIntegrationTest extends AbstractIntegrationSpec implements Direc
         skipped ":foo"
     }
 
-    @ToBeFixedForConfigurationCache(skip = ToBeFixedForConfigurationCache.Skip.FLAKY)
     def "displays info about loading and storing in cache"() {
         buildFile << defineCacheableTask()
         when:

@@ -16,25 +16,29 @@
 
 package org.gradle.api.internal.tasks;
 
-import org.gradle.api.NonNullApi;
-import org.gradle.api.internal.tasks.properties.ContentTracking;
-import org.gradle.api.internal.tasks.properties.FileParameterUtils;
-import org.gradle.api.internal.tasks.properties.InputFilePropertyType;
-import org.gradle.api.tasks.FileNormalizer;
+import org.gradle.api.tasks.ClasspathNormalizer;
+import org.gradle.api.tasks.CompileClasspathNormalizer;
 import org.gradle.api.tasks.PathSensitivity;
 import org.gradle.api.tasks.TaskInputFilePropertyBuilder;
-import org.gradle.internal.fingerprint.AbsolutePathInputNormalizer;
+import org.gradle.internal.deprecation.DeprecationLogger;
+import org.gradle.internal.execution.model.InputNormalizer;
 import org.gradle.internal.fingerprint.DirectorySensitivity;
+import org.gradle.internal.fingerprint.FileNormalizer;
 import org.gradle.internal.fingerprint.LineEndingSensitivity;
+import org.gradle.internal.properties.InputFilePropertyType;
+import org.gradle.internal.properties.StaticValue;
+import org.jspecify.annotations.NullMarked;
 
-@NonNullApi
+import java.util.function.BooleanSupplier;
+
+@NullMarked
 public class DefaultTaskInputFilePropertyRegistration extends AbstractTaskFilePropertyRegistration implements TaskInputFilePropertyRegistration {
 
     private final InputFilePropertyType filePropertyType;
-    private boolean skipWhenEmpty;
+    private BooleanSupplier skipWhenEmpty = () -> false;
     private DirectorySensitivity directorySensitivity = DirectorySensitivity.DEFAULT;
     private LineEndingSensitivity lineEndingSensitivity = LineEndingSensitivity.DEFAULT;
-    private Class<? extends FileNormalizer> normalizer = AbsolutePathInputNormalizer.class;
+    private FileNormalizer normalizer = InputNormalizer.ABSOLUTE_PATH;
 
     public DefaultTaskInputFilePropertyRegistration(StaticValue value, InputFilePropertyType filePropertyType) {
         super(value);
@@ -54,11 +58,16 @@ public class DefaultTaskInputFilePropertyRegistration extends AbstractTaskFilePr
 
     @Override
     public boolean isSkipWhenEmpty() {
-        return skipWhenEmpty;
+        return skipWhenEmpty.getAsBoolean();
     }
 
     @Override
-    public TaskInputFilePropertyBuilderInternal skipWhenEmpty(boolean skipWhenEmpty) {
+    public TaskInputFilePropertyBuilderInternal skipWhenEmpty(boolean newValue) {
+        return skipWhenEmpty(() -> newValue);
+    }
+
+    @Override
+    public TaskInputFilePropertyBuilderInternal skipWhenEmpty(BooleanSupplier skipWhenEmpty) {
         this.skipWhenEmpty = skipWhenEmpty;
         return this;
     }
@@ -75,34 +84,39 @@ public class DefaultTaskInputFilePropertyRegistration extends AbstractTaskFilePr
     }
 
     @Override
-    public TaskInputFilePropertyBuilderInternal untracked() {
-        return tracked(false);
-    }
-
-    @Override
-    public TaskInputFilePropertyBuilderInternal tracked(boolean tracked) {
-        setContentTracking(tracked ? ContentTracking.TRACKED : ContentTracking.UNTRACKED);
-        return this;
-    }
-
-    @Override
     public TaskInputFilePropertyBuilderInternal optional() {
         return optional(true);
     }
 
     @Override
     public TaskInputFilePropertyBuilderInternal withPathSensitivity(PathSensitivity sensitivity) {
-        return withNormalizer(FileParameterUtils.determineNormalizerForPathSensitivity(sensitivity));
+        return withInternalNormalizer(InputNormalizer.determineNormalizerForPathSensitivity(sensitivity));
     }
 
     @Override
-    public TaskInputFilePropertyBuilderInternal withNormalizer(Class<? extends FileNormalizer> normalizer) {
+    public TaskInputFilePropertyBuilderInternal withNormalizer(Class<? extends org.gradle.api.tasks.FileNormalizer> normalizer) {
+        if (normalizer == ClasspathNormalizer.class) {
+            return withInternalNormalizer(InputNormalizer.RUNTIME_CLASSPATH);
+        } else if (normalizer == CompileClasspathNormalizer.class) {
+            return withInternalNormalizer(InputNormalizer.COMPILE_CLASSPATH);
+        } else {
+            DeprecationLogger.deprecateBehaviour(String.format("Setting normalizer of type '%s' on property '%s'.", normalizer.getCanonicalName(), getPropertyName()))
+                .withProblemName("Custom normalizer set on an input file property")
+                .willBecomeAnErrorInGradle10()
+                .undocumented() // TODO: We don't seem to have any user manual documentation for this API
+                .nagUser();
+            return this;
+        }
+    }
+
+    @Override
+    public TaskInputFilePropertyBuilderInternal withInternalNormalizer(FileNormalizer normalizer) {
         this.normalizer = normalizer;
         return this;
     }
 
     @Override
-    public Class<? extends FileNormalizer> getNormalizer() {
+    public FileNormalizer getNormalizer() {
         return normalizer;
     }
 
@@ -135,13 +149,13 @@ public class DefaultTaskInputFilePropertyRegistration extends AbstractTaskFilePr
     }
 
     @Override
-    public TaskInputFilePropertyBuilder normalizeLineEndings(boolean ignoreLineEndings) {
-        this.lineEndingSensitivity = ignoreLineEndings ? LineEndingSensitivity.NORMALIZE_LINE_ENDINGS : LineEndingSensitivity.DEFAULT;
+    public TaskInputFilePropertyBuilder normalizeLineEndings(boolean normalizeLineEndings) {
+        this.lineEndingSensitivity = normalizeLineEndings ? LineEndingSensitivity.NORMALIZE_LINE_ENDINGS : LineEndingSensitivity.DEFAULT;
         return this;
     }
 
     @Override
     public String toString() {
-        return getPropertyName() + " (" + getNormalizer().getSimpleName().replace("Normalizer", "") + ")";
+        return getPropertyName() + " (" + getNormalizer() + ")";
     }
 }

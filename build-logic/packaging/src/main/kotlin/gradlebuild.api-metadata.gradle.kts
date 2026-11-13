@@ -26,14 +26,16 @@ plugins {
     java
 }
 
-val apiDeclaration by tasks.registering(WriteProperties::class) {
+val apiDeclarationPropertiesFile = generatedPropertiesFileFor("gradle-api-declaration")
+
+val apiDeclaration = tasks.register<WriteProperties>("apiDeclaration") {
     property("includes", PublicApi.includes.joinToString(":"))
     property("excludes", PublicApi.excludes.joinToString(":"))
-    outputFile = generatedPropertiesFileFor("gradle-api-declaration").get().asFile
+    destinationFile = apiDeclarationPropertiesFile
 }
 
 sourceSets.main {
-    output.dir(apiDeclaration.map { it.outputFile.parentFile })
+    output.dir(mapOf("builtBy" to apiDeclaration), apiDeclarationPropertiesFile.map { it.asFile.parentFile })
 }
 
 fun generatedPropertiesFileFor(name: String) =

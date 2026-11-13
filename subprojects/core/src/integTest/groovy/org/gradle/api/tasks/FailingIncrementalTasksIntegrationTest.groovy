@@ -17,9 +17,7 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import spock.lang.Unroll
 
-@Unroll
 class FailingIncrementalTasksIntegrationTest extends AbstractIntegrationSpec {
 
     def "consecutively failing task has correct up-to-date status and failure"() {
@@ -64,11 +62,11 @@ class FailingIncrementalTasksIntegrationTest extends AbstractIntegrationSpec {
                 @Inject
                 abstract ProjectLayout getLayout()
 
-                @InputDirectory File sourceDir
+                @Incremental @InputDirectory File sourceDir
                 @OutputDirectory File destinationDir
 
                 @TaskAction
-                void process(IncrementalTaskInputs inputs) {
+                void process(InputChanges inputs) {
                     def outputTxt = layout.projectDirectory.file("\$destinationDir/output.txt").asFile
                     outputTxt.text = "output"
                     def modifyOutputs = providers.gradleProperty('modifyOutputs').orNull
@@ -102,13 +100,15 @@ class FailingIncrementalTasksIntegrationTest extends AbstractIntegrationSpec {
                 destinationDir = file("build")
             }
         """
-
+        executer.withArgument("--no-problems-report")
         succeeds "incrementalTask", "-PexpectIncremental=false"
 
         file("src/input-change.txt") << "input"
+        executer.withArgument("--no-problems-report")
         fails "incrementalTask", "-PexpectIncremental=true", "-PmodifyOutputs=$modifyOutputs", "-Pfail"
 
         expect:
+        executer.withArgument("--no-problems-report")
         succeeds "incrementalTask", "-PexpectIncremental=$incremental"
 
         where:

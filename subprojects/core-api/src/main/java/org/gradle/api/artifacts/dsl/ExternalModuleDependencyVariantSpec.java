@@ -15,8 +15,6 @@
  */
 package org.gradle.api.artifacts.dsl;
 
-import org.gradle.api.Incubating;
-
 /**
  * The specification of a dependency variant. Some dependencies can be fined tuned
  * to select a particular variant. For example, one might want to select the test
@@ -24,25 +22,28 @@ import org.gradle.api.Incubating;
  *
  * @since 6.8
  */
-@Incubating
 public interface ExternalModuleDependencyVariantSpec {
     /**
      * Configures the dependency to select the "platform" variant.
+     * @since 6.8
      */
     void platform();
 
     /**
      * Configures the dependency to select the test fixtures capability.
+     * @since 6.8
      */
     void testFixtures();
 
     /**
      * Configures the classifier of this dependency
+     * @since 6.8
      */
     void classifier(String classifier);
 
     /**
      * Configures the artifact type of this dependency
+     * @since 6.8
      */
     void artifactType(String artifactType);
 

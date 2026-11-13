@@ -14,8 +14,9 @@
  * limitations under the License.
  */
 
-import gradlebuild.basics.accessors.kotlin
+import gradlebuild.basics.accessors.kotlinMainSourceSet
 import gradlebuild.basics.util.ReproduciblePropertiesWriter
+import gradlebuild.configureAsRuntimeJarClasspath
 import gradlebuild.kotlindsl.generator.tasks.GenerateKotlinDependencyExtensions
 
 plugins {
@@ -26,23 +27,38 @@ plugins {
 // --- Enable automatic generation of API extensions -------------------
 val apiExtensionsOutputDir = layout.buildDirectory.dir("generated-sources/kotlin")
 
-val publishedKotlinDslPluginVersion = "2.1.7" // TODO:kotlin-dsl
+val publishedKotlinDslPluginVersion = "6.7.13"
+val libs = project.versionCatalogs.named("libs")
+val kotlinVersion = libs.findVersion("kotlin").get().getStrictVersion()
 
 tasks {
-    val generateKotlinDependencyExtensions by registering(GenerateKotlinDependencyExtensions::class) {
-        outputDir.set(apiExtensionsOutputDir)
-        embeddedKotlinVersion.set(libs.kotlinVersion)
-        kotlinDslPluginsVersion.set(publishedKotlinDslPluginVersion)
+
+    val generateKotlinDependencyExtensions = register<GenerateKotlinDependencyExtensions>("generateKotlinDependencyExtensions") {
+        outputDir = apiExtensionsOutputDir
+        embeddedKotlinVersion = kotlinVersion
+        kotlinDslPluginsVersion = publishedKotlinDslPluginVersion
     }
 
-    sourceSets.main {
-        kotlin.srcDir(files(apiExtensionsOutputDir).builtBy(generateKotlinDependencyExtensions))
+    val apiExtensionsFileCollection = files(apiExtensionsOutputDir).builtBy(generateKotlinDependencyExtensions)
+
+    kotlinMainSourceSet.srcDir(apiExtensionsFileCollection)
+
+    // Workaround for https://github.com/gradle/gradle/issues/24131
+    // See gradlebuild.unittest-and-compile.gradle.kts
+    configurations["transitiveSourcesElements"].outgoing.artifact(apiExtensionsOutputDir) {
+        builtBy(generateKotlinDependencyExtensions)
+    }
+
+    processResources {
+        // Add generated sources to the main jar because `src` or any other Gradle distribution does not include them.
+        // A more general solution is probably required: https://github.com/gradle/gradle/issues/21114
+        from(apiExtensionsFileCollection)
     }
 
 // -- Version manifest properties --------------------------------------
-    val writeVersionsManifest by registering(WriteProperties::class) {
-        outputFile = buildDir.resolve("versionsManifest/gradle-kotlin-dsl-versions.properties")
-        property("kotlin", libs.kotlinVersion)
+    val writeVersionsManifest = register<WriteProperties>("writeVersionsManifest") {
+        destinationFile = layout.buildDirectory.file("versionsManifest/gradle-kotlin-dsl-versions.properties")
+        property("kotlin", kotlinVersion)
     }
 
     processResources {
@@ -52,22 +68,26 @@ tasks {
 
 // -- Embedded Kotlin dependencies -------------------------------------
 
-val embeddedKotlinBaseDependencies by configurations.creating
-
-dependencies {
-    embeddedKotlinBaseDependencies(libs.futureKotlin("stdlib-jdk8"))
-    embeddedKotlinBaseDependencies(libs.futureKotlin("reflect"))
+val embeddedKotlinBaseDependencies = configurations.dependencyScope("embeddedKotlinBaseDependencies").get()
+val embeddedKotlinBaseClasspath = configurations.resolvable("embeddedKotlinBaseClasspath") {
+    extendsFrom(embeddedKotlinBaseDependencies)
+    configureAsRuntimeJarClasspath(objects)
 }
 
-val writeEmbeddedKotlinDependencies by tasks.registering {
+dependencies {
+    embeddedKotlinBaseDependencies(libs.findLibrary("kotlinStdlib").get())
+    embeddedKotlinBaseDependencies(libs.findLibrary("kotlinReflect").get())
+}
+
+val writeEmbeddedKotlinDependencies = tasks.register("writeEmbeddedKotlinDependencies") {
     val outputFile = layout.buildDirectory.file("embeddedKotlinDependencies/gradle-kotlin-dsl-embedded-kotlin.properties")
     outputs.file(outputFile)
-    val values = embeddedKotlinBaseDependencies
+    val values = embeddedKotlinBaseClasspath
     inputs.files(values)
-    val skippedModules = setOf(project.name, "distributions-dependencies", "kotlin-compiler-embeddable")
+    val skippedModules = setOf(project.name, "distributions-dependencies")
     // https://github.com/gradle/configuration-cache/issues/183
     val modules = provider {
-        embeddedKotlinBaseDependencies.incoming.resolutionResult.allComponents
+        embeddedKotlinBaseClasspath.get().incoming.resolutionResult.allComponents
             .asSequence()
             .mapNotNull { it.moduleVersion }
             .filter { it.name !in skippedModules }

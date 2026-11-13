@@ -16,7 +16,6 @@
 
 package org.gradle.api.services;
 
-import org.gradle.api.Incubating;
 import org.gradle.api.Named;
 import org.gradle.api.provider.Property;
 import org.gradle.api.provider.Provider;
@@ -28,21 +27,30 @@ import org.gradle.api.provider.Provider;
  * @param <P> the service parameters type.
  * @since 6.1
  */
-@Incubating
 public interface BuildServiceRegistration<T extends BuildService<P>, P extends BuildServiceParameters> extends Named {
     /**
      * Returns the parameters that will be used to instantiate the service with.
+     * @since 6.1
      */
     P getParameters();
 
     /**
      * Specifies the maximum number of tasks that can use this service in parallel. Setting this to 1 means that the service will be used by a single task at a time.
-     * When this property has no value defined, then any number of tasks may use this service iin parallel. This is the default.
+     * When this property has no value defined, then any number of tasks may use this service in parallel. This is the default.
+     *
+     * <p>
+     * IMPORTANT: the build service must be consumed via a {@link ServiceReference} property, or explicitly registered with every using task
+     * via {@link org.gradle.api.Task#usesService(Provider) Task#usesService} for this constraint to be honored.
+     *
+     * @see ServiceReference
+     * @see org.gradle.api.Task#usesService(Provider)
+     * @since 6.1
      */
     Property<Integer> getMaxParallelUsages();
 
     /**
      * Returns a {@link Provider} that will create the service instance when its value is queried.
+     * @since 6.1
      */
     Provider<T> getService();
 }

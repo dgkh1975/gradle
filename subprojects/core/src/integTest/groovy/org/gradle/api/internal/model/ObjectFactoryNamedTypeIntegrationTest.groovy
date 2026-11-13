@@ -17,7 +17,7 @@
 package org.gradle.api.internal.model
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
-import org.gradle.integtests.fixtures.ToBeFixedForConfigurationCache
+import org.gradle.integtests.fixtures.modes.ToBeFixedForConfigurationCache
 
 import static org.hamcrest.CoreMatchers.allOf
 import static org.hamcrest.CoreMatchers.containsString
@@ -102,7 +102,7 @@ class ObjectFactoryNamedTypeIntegrationTest extends AbstractIntegrationSpec {
         outputContains("thing1: thing1")
     }
 
-    @ToBeFixedForConfigurationCache(because = "ClassNotFoundException: Thing\$Impl")
+    @ToBeFixedForConfigurationCache(issue = "https://github.com/gradle/gradle/issues/36718", skipBecause = "flaky")
     def "named instance can be used as task input property"() {
         buildFile << """
             interface Thing extends Named { }
@@ -120,7 +120,7 @@ class ObjectFactoryNamedTypeIntegrationTest extends AbstractIntegrationSpec {
             }
 
             task a(type: ThingTask) {
-                thing = objects.named(Thing, providers.systemProperty('name').forUseAtConfigurationTime().getOrElse('a'))
+                thing = objects.named(Thing, providers.systemProperty('name').getOrElse('a'))
                 outputFile = layout.projectDirectory.file("out.txt")
             }
 """
@@ -142,7 +142,7 @@ class ObjectFactoryNamedTypeIntegrationTest extends AbstractIntegrationSpec {
         run("a")
 
         then:
-        result.assertTaskNotSkipped(":a")
+        result.assertTaskExecuted(":a")
         file("out.txt").text == "b"
 
         when:
@@ -153,6 +153,7 @@ class ObjectFactoryNamedTypeIntegrationTest extends AbstractIntegrationSpec {
         result.assertTaskSkipped(":a")
     }
 
+    @ToBeFixedForConfigurationCache(issue = "https://github.com/gradle/gradle/issues/36718", skipBecause = "flaky")
     def "cannot mutate named instance from groovy"() {
         buildFile << """
             interface Thing extends Named { }

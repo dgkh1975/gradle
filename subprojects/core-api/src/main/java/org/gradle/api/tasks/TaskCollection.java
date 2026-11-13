@@ -27,8 +27,15 @@ import org.gradle.api.specs.Spec;
  * A {@code TaskCollection} contains a set of {@link Task} instances, and provides a number of query methods.
  *
  * @param <T> The type of tasks which this collection contains.
+ * @since 0.7
  */
 public interface TaskCollection<T extends Task> extends NamedDomainObjectSet<T> {
+
+    /**
+     * {@inheritDoc}
+     */
+    @Override
+    TaskCollection<T> named(Spec<String> nameFilter);
 
     /**
      * {@inheritDoc}
@@ -68,6 +75,7 @@ public interface TaskCollection<T extends Task> extends NamedDomainObjectSet<T> 
      *
      * @param action The action to be executed
      * @return the supplied action
+     * @since 0.7
      */
     @SuppressWarnings("UnusedDeclaration")
     Action<? super T> whenTaskAdded(Action<? super T> action);
@@ -78,6 +86,7 @@ public interface TaskCollection<T extends Task> extends NamedDomainObjectSet<T> 
      *
      * @param closure The closure to be called
      * @see #whenTaskAdded(Action)
+     * @since 0.7
      */
     @SuppressWarnings("UnusedDeclaration")
     void whenTaskAdded(Closure closure);

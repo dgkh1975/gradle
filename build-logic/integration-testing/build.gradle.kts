@@ -2,11 +2,31 @@ plugins {
     id("gradlebuild.build-logic.kotlin-dsl-gradle-plugin")
 }
 
-dependencies {
-    implementation(project(":basics"))
-    implementation(project(":cleanup"))
-    implementation(project(":dependency-modules"))
-    implementation(project(":module-identity"))
+description = "Provides plugins to create and configure integration, cross-version and distribution tests"
 
-    testImplementation("junit:junit")
+gradlePlugin {
+    plugins {
+        register("ideProvisioning") {
+            id = "gradlebuild.ide-provisioning"
+            implementationClass = "gradlebuild.integrationtests.ide.IdeProvisioningPlugin"
+        }
+    }
+
+    plugins {
+        register("androidHomeWarmup") {
+            id = "gradlebuild.android-home-warmup"
+            implementationClass = "gradlebuild.integrationtests.androidhomewarmup.AndroidHomeWarmupPlugin"
+        }
+    }
+}
+
+dependencies {
+    implementation("gradlebuild:basics")
+    implementation("gradlebuild:module-identity")
+
+    implementation(projects.cleanup)
+    implementation(projects.dependencyModules)
+    implementation(projects.jvm)
+
+    implementation(testLibs.intellijPlatform)
 }

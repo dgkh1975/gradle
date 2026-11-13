@@ -17,6 +17,7 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
 
 import static org.gradle.integtests.fixtures.executer.TaskOrderSpecs.any
 import static org.gradle.integtests.fixtures.executer.TaskOrderSpecs.exact
@@ -49,10 +50,12 @@ class DeleteTaskIntegrationTest extends AbstractIntegrationSpec {
     }
 
     def "deleted files show up in task destroys"() {
-        buildFile << """
-            import org.gradle.api.internal.tasks.properties.PropertyVisitor
-            import org.gradle.api.internal.tasks.properties.PropertyWalker
+        buildFile """
+            import org.gradle.internal.properties.PropertyVisitor
+            import org.gradle.internal.properties.bean.PropertyWalker
             import org.gradle.api.internal.tasks.TaskPropertyUtils
+
+            def objects = services.get(ObjectFactory)
 
             task clean(type: Delete) {
                 delete 'foo'
@@ -63,26 +66,30 @@ class DeleteTaskIntegrationTest extends AbstractIntegrationSpec {
                 doLast {
                     def destroyablePaths = []
                     def propertyWalker = services.get(PropertyWalker)
-                    TaskPropertyUtils.visitProperties(propertyWalker, it, new PropertyVisitor.Adapter() {
+                    TaskPropertyUtils.visitProperties(propertyWalker, it, new PropertyVisitor() {
+                        @Override
                         void visitDestroyableProperty(Object value) {
                             destroyablePaths << value
                         }
                     })
-                    def destroyableFiles = files(destroyablePaths).files
-                    assert destroyableFiles.size() == 3 &&
-                        destroyableFiles.containsAll([
-                            file('foo'),
-                            file('bar'),
-                            file('baz')
-                        ])
+                    def destroyableFiles = objects.fileCollection().from(destroyablePaths).files
+                    println("Destroyables size: \${destroyableFiles.size()}.")
+                    destroyableFiles.each {
+                        println("Destroyable file: \${it.absolutePath}")
+                    }
                 }
              }
         """
 
         expect:
         succeeds "clean"
+        outputContains("Destroyables size: 3.")
+        outputContains("Destroyable file: ${file('foo').absolutePath}")
+        outputContains("Destroyable file: ${file('bar').absolutePath}")
+        outputContains("Destroyable file: ${file('baz').absolutePath}")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "subprojects, configure projects from root")
     def "clean build and build clean work reliably"() {
         settingsFile << "include 'a', 'b'"
         buildFile << """
@@ -139,15 +146,20 @@ class DeleteTaskIntegrationTest extends AbstractIntegrationSpec {
             assert(file("build.gradle.kts").exists())
         """
         when: "clean is executed"
+        executer.withArgument("--no-problems-report")
         succeeds "clean"
         then: "clean is marked as UP-TO-DATE"
         result.groupedOutput.task(":clean").outcome == "UP-TO-DATE"
+
         when: "clean is executed again without any changes"
+        executer.withArgument("--no-problems-report")
         succeeds "clean"
         then: "clean is still marked UP-TO-DATE"
         result.groupedOutput.task(":clean").outcome == "UP-TO-DATE"
+
         when: "the kotlin script compiler is invoked due to a script change"
         buildKotlinFile << "\n"
+        executer.withArgument("--no-problems-report")
         succeeds "clean"
         then: "clean is still marked as UP-TO-DATE"
         result.groupedOutput.task(":clean").outcome == "UP-TO-DATE"

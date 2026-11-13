@@ -18,25 +18,30 @@ package org.gradle.api.tasks.util;
 
 import com.google.common.collect.Sets;
 import groovy.lang.Closure;
+import org.gradle.api.Incubating;
 import org.gradle.api.file.FileTreeElement;
 import org.gradle.api.specs.Spec;
 import org.gradle.api.specs.Specs;
-import org.gradle.api.tasks.AntBuilderAware;
 import org.gradle.api.tasks.util.internal.IntersectionPatternSet;
-import org.gradle.api.tasks.util.internal.PatternSetAntBuilderDelegate;
 import org.gradle.api.tasks.util.internal.PatternSpecFactory;
+import org.gradle.internal.deprecation.DeprecationLogger;
+import org.gradle.internal.instrumentation.api.annotations.NotToBeMigratedToLazy;
 import org.gradle.internal.typeconversion.NotationParser;
 import org.gradle.internal.typeconversion.NotationParserBuilder;
 import org.gradle.util.internal.CollectionUtils;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
  * Standalone implementation of {@link PatternFilterable}.
+ * @since 0.7
  */
-public class PatternSet implements AntBuilderAware, PatternFilterable {
+@NotToBeMigratedToLazy
+@SuppressWarnings("deprecation")
+public class PatternSet implements org.gradle.api.tasks.AntBuilderAware, PatternFilterable {
 
     private static final NotationParser<Object, String> PARSER = NotationParserBuilder.toType(String.class).fromCharSequence().toComposite();
     private final PatternSpecFactory patternSpecFactory;
@@ -47,14 +52,29 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
     private Set<Spec<FileTreeElement>> excludeSpecs;
     private boolean caseSensitive = true;
 
+    /**
+     * Creates a new {@code PatternSet}.
+     *
+     * @since 0.7
+     */
     public PatternSet() {
         this(PatternSpecFactory.INSTANCE);
     }
 
+    /**
+     * Creates a new {@code PatternSet}.
+     *
+     * @since 2.11
+     */
     protected PatternSet(PatternSet patternSet) {
         this(patternSet.patternSpecFactory);
     }
 
+    /**
+     * Creates a new {@code PatternSet}.
+     *
+     * @since 2.11
+     */
     protected PatternSet(PatternSpecFactory patternSpecFactory) {
         this.patternSpecFactory = patternSpecFactory;
     }
@@ -99,17 +119,28 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
         return result;
     }
 
-    private Set<?> nullToEmpty(@Nullable Set<?> set) {
-        if (set == null) {
-            return Collections.emptySet();
-        }
-        return set;
+    private static <T> Set<T> nullToEmptyAndUnmodifiableSet(@Nullable Set<T> set) {
+        return set == null ? Collections.emptySet() : Collections.unmodifiableSet(set);
     }
 
+    private static Set<?> nullToEmpty(@Nullable Set<?> set) {
+        return set == null ? Collections.emptySet() : set;
+    }
+
+    /**
+     * Copy.
+     *
+     * @since 0.8
+     */
     public PatternSet copyFrom(PatternFilterable sourcePattern) {
         return doCopyFrom((PatternSet) sourcePattern);
     }
 
+    /**
+     * Do copy.
+     *
+     * @since 2.5
+     */
     protected PatternSet doCopyFrom(PatternSet from) {
         caseSensitive = from.caseSensitive;
 
@@ -121,7 +152,7 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
 
             includes = null;
             excludes = null;
-            includeSpecs = Sets.newLinkedHashSet();
+            includeSpecs = new LinkedHashSet<>();
             includeSpecs.add(intersectCopy.getAsSpec());
             excludeSpecs = null;
         } else {
@@ -138,6 +169,11 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
         target.excludeSpecs = from.excludeSpecs == null ? null : Sets.newLinkedHashSet(from.excludeSpecs);
     }
 
+    /**
+     * Intersect.
+     *
+     * @since 0.8
+     */
     public PatternSet intersect() {
         if (isEmpty()) {
             return new PatternSet(this.patternSpecFactory);
@@ -153,6 +189,7 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
      * in this case.
      *
      * @return true when no includes or excludes have been added to this instance
+     * @since 2.13
      */
     public boolean isEmpty() {
         return (includes == null || includes.isEmpty())
@@ -161,29 +198,75 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
             && (excludeSpecs == null || excludeSpecs.isEmpty());
     }
 
+    /**
+     * Returns the as spec.
+     *
+     * @since 0.8
+     */
     public Spec<FileTreeElement> getAsSpec() {
         return patternSpecFactory.createSpec(this);
     }
 
+    /**
+     * Returns the as include spec.
+     *
+     * @since 1.4
+     */
     public Spec<FileTreeElement> getAsIncludeSpec() {
         return patternSpecFactory.createIncludeSpec(this);
     }
 
+    /**
+     * Returns the as exclude spec.
+     *
+     * @since 1.4
+     */
     public Spec<FileTreeElement> getAsExcludeSpec() {
         return patternSpecFactory.createExcludeSpec(this);
+    }
+
+    /**
+     * Like {@link #getIncludes()}, but returns a unmodifiable view or empty set.
+     *
+     * <p>Use this if you are only reading from the set, as it avoids allocating a set if not needed.</p>
+     *
+     * @return the include patterns, or an empty set if none
+     * @since 8.8
+     */
+    @Incubating
+    public Set<String> getIncludesView() {
+        return nullToEmptyAndUnmodifiableSet(includes);
     }
 
     @Override
     public Set<String> getIncludes() {
         if (includes == null) {
-            includes = Sets.newLinkedHashSet();
+            includes = new LinkedHashSet<>();
         }
         return includes;
     }
 
+    /**
+     * Like {@link #getIncludeSpecs()}, but returns a unmodifiable view or empty set.
+     *
+     * <p>Use this if you are only reading from the set, as it avoids allocating a set if not needed.</p>
+     *
+     * @return the include specs, or an empty set if none
+     * @since 8.8
+     */
+    @Incubating
+    public Set<Spec<FileTreeElement>> getIncludeSpecsView() {
+        return nullToEmptyAndUnmodifiableSet(includeSpecs);
+    }
+
+    /**
+     * Returns the include specs.
+     *
+     * @since 0.9
+     */
     public Set<Spec<FileTreeElement>> getIncludeSpecs() {
         if (includeSpecs == null) {
-            includeSpecs = Sets.newLinkedHashSet();
+            includeSpecs = new LinkedHashSet<>();
         }
         return includeSpecs;
     }
@@ -214,17 +297,48 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
         return this;
     }
 
+    /**
+     * Like {@link #getExcludes()}, but returns a unmodifiable view or empty set.
+     *
+     * <p>Use this if you are only reading from the set, as it avoids allocating a set if not needed.</p>
+     *
+     * @return the exclude patterns, or an empty set if none
+     * @since 8.8
+     */
+    @Incubating
+    public Set<String> getExcludesView() {
+        return nullToEmptyAndUnmodifiableSet(excludes);
+    }
+
     @Override
     public Set<String> getExcludes() {
         if (excludes == null) {
-            excludes = Sets.newLinkedHashSet();
+            excludes = new LinkedHashSet<>();
         }
         return excludes;
     }
 
+    /**
+     * Like {@link #getExcludeSpecs()}, but returns a unmodifiable view or empty set.
+     *
+     * <p>Use this if you are only reading from the set, as it avoids allocating a set if not needed.</p>
+     *
+     * @return the exclude specs, or an empty set if none
+     * @since 8.8
+     */
+    @Incubating
+    public Set<Spec<FileTreeElement>> getExcludeSpecsView() {
+        return nullToEmptyAndUnmodifiableSet(excludeSpecs);
+    }
+
+    /**
+     * Returns the exclude specs.
+     *
+     * @since 0.9
+     */
     public Set<Spec<FileTreeElement>> getExcludeSpecs() {
         if (excludeSpecs == null) {
-            excludeSpecs = Sets.newLinkedHashSet();
+            excludeSpecs = new LinkedHashSet<>();
         }
         return excludeSpecs;
     }
@@ -236,16 +350,31 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
     }
 
 
+    /**
+     * Returns whether case sensitive is set.
+     *
+     * @since 0.8
+     */
     public boolean isCaseSensitive() {
         return caseSensitive;
     }
 
+    /**
+     * Sets the case sensitive.
+     *
+     * @since 0.8
+     */
     public void setCaseSensitive(boolean caseSensitive) {
         this.caseSensitive = caseSensitive;
     }
 
     /*
     This can't be called just include, because it has the same erasure as include(Iterable<String>).
+     */
+    /**
+     * Include specs.
+     *
+     * @since 0.9
      */
     public PatternSet includeSpecs(Iterable<Spec<FileTreeElement>> includeSpecs) {
         CollectionUtils.addAll(getIncludeSpecs(), includeSpecs);
@@ -278,6 +407,11 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
         return this;
     }
 
+    /**
+     * Exclude specs.
+     *
+     * @since 0.9
+     */
     public PatternSet excludeSpecs(Iterable<Spec<FileTreeElement>> excludes) {
         CollectionUtils.addAll(getExcludeSpecs(), excludes);
         return this;
@@ -290,12 +424,17 @@ public class PatternSet implements AntBuilderAware, PatternFilterable {
     }
 
     @Override
+    @Deprecated
     public Object addToAntBuilder(Object node, String childNodeName) {
+        DeprecationLogger.deprecateMethod(PatternSet.class, "addToAntBuilder(Object, String)")
+            .willBeRemovedInGradle10()
+            .withUpgradeGuideSection(9, "deprecated_ant_builder")
+            .nagUser();
 
         if (!nullToEmpty(includeSpecs).isEmpty() || !nullToEmpty(excludeSpecs).isEmpty()) {
             throw new UnsupportedOperationException("Cannot add include/exclude specs to Ant node. Only include/exclude patterns are currently supported.");
         }
 
-        return new PatternSetAntBuilderDelegate(getIncludes(), getExcludes(), isCaseSensitive()).addToAntBuilder(node, childNodeName);
+        return new org.gradle.api.tasks.util.internal.PatternSetAntBuilderDelegate(getIncludesView(), getExcludesView(), isCaseSensitive()).addToAntBuilder(node, childNodeName);
     }
 }

@@ -17,12 +17,15 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.util.internal.ToBeImplemented
 import spock.lang.Issue
+
+import static org.hamcrest.CoreMatchers.containsString
 
 class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
     def "can define task with abstract read-only Property<T> property"() {
         given:
-        buildFile << """
+        buildFile """
             abstract class MyTask extends DefaultTask {
                 @Internal
                 abstract Property<Integer> getCount()
@@ -33,7 +36,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 println("property = \$count")
                 count = 12
             }
@@ -49,7 +52,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "reports failure to query managed Property<T> with no value"() {
         given:
-        buildFile << """
+        buildFile """
             abstract class MyTask extends DefaultTask {
                 @Internal
                 abstract Property<Integer> getCount()
@@ -60,8 +63,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
-            }
+            tasks.register("thing", MyTask) {}
         """
 
         when:
@@ -71,9 +73,9 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
         failure.assertHasCause("Cannot query the value of task ':thing' property 'count' because it has no value available.")
     }
 
-    def "reports failure to query read-only unmanaged Property<T> with final getter"() {
+    def "reports failure to query non-abstract Property<T> with Groovy property"() {
         given:
-        buildFile << """
+        buildFile """
             abstract class MyTask extends DefaultTask {
                 @Internal
                 final Property<Integer> count = project.objects.property(Integer)
@@ -84,7 +86,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 println("property = \$count")
             }
         """
@@ -97,12 +99,111 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
         failure.assertHasCause("Cannot query the value of task ':thing' property 'count' because it has no value available.")
     }
 
-    def "reports failure to query read-only unmanaged Property<T>"() {
+    @Issue("https://github.com/gradle/gradle/issues/33215")
+    def "non-abstract Property<T> with Groovy property carries task dependencies"() {
         given:
-        file("buildSrc/src/main/java/MyTask.java") << """
-            import org.gradle.api.*;
-            import org.gradle.api.provider.*;
-            import org.gradle.api.tasks.*;
+        buildFile """
+            abstract class MyTask extends DefaultTask {
+                @OutputFile
+                final Property<String> output = project.objects.property(String)
+
+                MyTask() {
+                    output.convention("output")
+                }
+            }
+
+            def taskProvider = tasks.register("thing", MyTask)
+            tasks.register("test") {
+                dependsOn($dependency)
+            }
+        """
+
+        when:
+        succeeds("test")
+
+        then:
+        executed(":thing")
+
+        where:
+        dependency << [
+            "taskProvider.get().output",
+            "taskProvider.flatMap { it.output }"
+        ]
+    }
+
+    def "reports failure to query non-abstract Property<T> with final getter"() {
+        given:
+        buildFile """
+            abstract class MyTask extends DefaultTask {
+                private final Property<Integer> count = project.objects.property(Integer)
+
+                @Internal
+                final Property<Integer> getCount() {
+                    return count
+                }
+
+                @TaskAction
+                void go() {
+                    println("count = \${count.get()}")
+                }
+            }
+
+            tasks.register("thing", MyTask) {
+                println("property = \$count")
+            }
+        """
+
+        when:
+        fails("thing")
+
+        then:
+        outputContains("property = task ':thing' property 'count'")
+        failure.assertHasCause("Cannot query the value of task ':thing' property 'count' because it has no value available.")
+    }
+
+    def "non-abstract Property<T> with final getter carries task dependencies"() {
+        given:
+        buildFile """
+            abstract class MyTask extends DefaultTask {
+                private final Property<String> output = project.objects.property(String)
+
+                MyTask() {
+                    output.convention("output")
+                }
+
+                @OutputFile
+                public final Property<String> getOutputGetter() {
+                    return output
+                }
+            }
+
+            def taskProvider = tasks.register("thing", MyTask)
+            tasks.register("test") {
+                dependsOn($dependency)
+            }
+        """
+
+        when:
+        succeeds("test")
+
+        then:
+        executed(":thing")
+
+        where:
+        dependency << [
+            "taskProvider.get().outputGetter",
+            "taskProvider.flatMap { it.outputGetter }"
+        ]
+    }
+
+    @Issue("https://github.com/gradle/gradle/issues/37421")
+    def "reports failure to query non-abstract Property<T> with non-final getter"() {
+        given:
+        javaFile("buildSrc/src/main/java/MyTask.java", """
+            import org.gradle.api.DefaultTask;
+            import org.gradle.api.provider.Property;
+            import org.gradle.api.tasks.Internal;
+            import org.gradle.api.tasks.TaskAction;
 
             public abstract class MyTask extends DefaultTask {
                 private final Property<Integer> count = getProject().getObjects().property(Integer.class);
@@ -117,10 +218,10 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                     System.out.println("count = " + count.get());
                 }
             }
-        """
+        """)
 
-        buildFile << """
-            tasks.create("thing", MyTask) {
+        buildFile """
+            tasks.register("thing", MyTask) {
                 println("property = \$count")
             }
         """
@@ -133,9 +234,144 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
         failure.assertHasCause("Cannot query the value of task ':thing' property 'count' because it has no value available.")
     }
 
+    @ToBeImplemented("https://github.com/gradle/gradle/issues/37421")
+    def "reports failure to query non-abstract Property<T> with final getter and boolean overload"() {
+        given:
+        javaFile("buildSrc/src/main/java/MyTask.java", """
+            import org.gradle.api.DefaultTask;
+            import org.gradle.api.provider.Property;
+            import org.gradle.api.tasks.Internal;
+            import org.gradle.api.tasks.TaskAction;
+
+            public abstract class MyTask extends DefaultTask {
+                private final Property<Boolean> flag = getProject().getObjects().property(Boolean.class);
+
+                @Internal
+                public final Property<Boolean> getFlag() {
+                    return flag;
+                }
+
+                @Internal
+                public boolean isFlag() {
+                    return flag.getOrElse(false);
+                }
+
+                @TaskAction
+                void go() {
+                    System.out.println("flag = " + flag.get());
+                }
+            }
+        """)
+
+        buildFile """
+            tasks.register("thing", MyTask) {
+                println("property = " + getFlag())
+            }
+        """
+
+        when:
+        fails("thing")
+
+        then:
+        // FIXME The owner is never attached, in a cached run and in a plain one alike, so neither the printed
+        //  property nor the failure can name the task or the property. These should be the asserts:
+        // outputContains("property = task ':thing' property 'flag'")
+        // failure.assertHasCause("Cannot query the value of task ':thing' property 'flag' because it has no value available.")
+        outputContains("property = property(java.lang.Boolean, undefined)")
+        failure.assertHasCause("Cannot query the value of this property because it has no value available.")
+    }
+
+    @ToBeImplemented("The producer of an output Property<T> is only attached when its annotated getter is called on the decorated task")
+    def "non-abstract Property<T> with non-final output getter carries task dependencies when reached through a getter that reads the field"() {
+        given:
+        buildFile """
+            abstract class MyTask extends DefaultTask {
+                private final Property<String> output = project.objects.property(String)
+
+                MyTask() {
+                    output.convention("output")
+                }
+
+                @OutputFile
+                Property<String> getOutput() {
+                    return output
+                }
+
+                @Internal
+                Property<String> getOutputBypassingGetter() {
+                    return this.@output
+                }
+            }
+
+            def taskProvider = tasks.register("thing", MyTask)
+            tasks.register("test") {
+                dependsOn($dependency)
+            }
+        """
+
+        when:
+        fails("test")
+
+        then:
+        // TODO: should succeed and run ":thing". Without a producer, the value of the property is
+        //  interpreted as the dependency, which is the name of a task that does not exist.
+        failure.assertThatCause(containsString("Task with name 'output' not found"))
+
+        where:
+        dependency << [
+            "taskProvider.get().outputBypassingGetter",
+            "taskProvider.flatMap { it.outputBypassingGetter }"
+        ]
+    }
+
+    def "non-abstract Property<T> carries task dependencies when #description"() {
+        given:
+        buildFile """
+            abstract class MyTask extends DefaultTask {
+                private final Property<String> output = project.objects.property(String)
+
+                MyTask() {
+                    output.convention("output")
+                }
+
+                @OutputFile
+                $outputModifier Property<String> getOutput() {
+                    return output
+                }
+
+                @$accessorAnnotation
+                Property<String> getAccessor() {
+                    return $accessorBody
+                }
+            }
+
+            def taskProvider = tasks.register("thing", MyTask)
+            $before
+            tasks.register("test") {
+                dependsOn(taskProvider.flatMap { it.$accessor })
+            }
+        """
+
+        when:
+        succeeds("test")
+
+        then:
+        executed(":thing")
+
+        where:
+        description                                                  | outputModifier | accessorAnnotation | accessorBody   | accessor   | before
+        "reached through its output getter"                          | ""             | "Internal"         | "output"       | "output"   | ""
+        "reached through a getter that calls the output getter"      | ""             | "Internal"         | "getOutput()"  | "accessor" | ""
+        "reached through another output getter that reads the field" | ""             | "OutputFile"       | "this.@output" | "accessor" | ""
+        // A final getter cannot be overridden, so the producer is attached when the task is created
+        "its output getter is final"                                 | "final"        | "Internal"         | "this.@output" | "accessor" | ""
+        // Attaching the producer is a side effect of calling the output getter
+        "its output getter was called earlier"                       | ""             | "Internal"         | "this.@output" | "accessor" | "taskProvider.configure { it.output }"
+    }
+
     def "can define task with abstract read-only ConfigurableFileCollection property"() {
         given:
-        buildFile << """
+        buildFile """
             abstract class MyTask extends DefaultTask {
                 @InputFiles
                 abstract ConfigurableFileCollection getSource()
@@ -146,7 +382,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 source.from("a", "b", "c")
             }
         """
@@ -160,7 +396,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "can define task with abstract read-only ConfigurableFileTree property"() {
         given:
-        buildFile << """
+        buildFile """
             abstract class MyTask extends DefaultTask {
                 @InputFiles
                 abstract ConfigurableFileTree getSource()
@@ -171,7 +407,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 source.from("dir")
             }
         """
@@ -187,11 +423,11 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "can define task with abstract read-only NamedDomainObjectContainer<T> property"() {
         given:
-        buildFile << """
+        buildFile """
             abstract class Bean {
                 @Internal
                 final String name
-                @Internal
+                @Input
                 abstract Property<String> getProp()
 
                 Bean(String name) {
@@ -209,7 +445,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 beans {
                     one { prop = '1' }
                     two { prop = '2' }
@@ -226,7 +462,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "can define task with abstract read-only DomainObjectSet<T> property"() {
         given:
-        buildFile << """
+        buildFile """
             class Bean {
                 @Input
                 String prop
@@ -242,7 +478,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 beans.add(new Bean(prop: '1'))
                 beans.add(new Bean(prop: '2'))
             }
@@ -257,9 +493,9 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "can define task with abstract read-only @Nested property"() {
         given:
-        buildFile << """
+        buildFile """
             interface Params {
-                @Internal
+                @Input
                 Property<Integer> getCount()
             }
             abstract class MyTask extends DefaultTask {
@@ -272,7 +508,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 println("params = \$params")
                 println("params.count = \$params.count")
                 params.count = 12
@@ -290,9 +526,9 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "can define task with non-abstract read-only @Nested property"() {
         given:
-        buildFile << """
+        buildFile """
             interface Params {
-                @Internal
+                @Input
                 Property<Integer> getCount()
             }
             class MyTask extends DefaultTask {
@@ -307,7 +543,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 println("params = \$params")
                 println("params.count = \$params.count")
                 params.count = 12
@@ -325,7 +561,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "can query generated read only property in constructor"() {
         given:
-        buildFile << """
+        buildFile """
             abstract class MyTask extends DefaultTask {
                 @Internal
                 abstract Property<String> getParam()
@@ -340,7 +576,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                 }
             }
 
-            tasks.create("thing", MyTask) {
+            tasks.register("thing", MyTask) {
                 param.set("from configuration")
             }
         """
@@ -354,8 +590,8 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
 
     def "cannot modify task's input properties via returned map"() {
         given:
-        buildFile << """
-            tasks.create("thing") {
+        buildFile """
+            tasks.register("thing") {
                 inputs.properties.put("Won't", "happen")
             }
         """
@@ -370,7 +606,7 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
     @Issue("https://github.com/gradle/gradle/issues/12133")
     def "abstract super type can define concrete property"() {
         // Problem is exposed by Java compiler
-        file("buildSrc/src/main/java/AbstractCustomTask.java") << """
+        javaFile("buildSrc/src/main/java/AbstractCustomTask.java", """
             import org.gradle.api.file.ConfigurableFileCollection;
             import org.gradle.api.DefaultTask;
             import org.gradle.api.tasks.InputFiles;
@@ -389,8 +625,8 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                     sourceFiles.setFrom(files);
                 }
             }
-        """
-        file("buildSrc/src/main/java/CustomTask.java") << """
+        """)
+        javaFile("buildSrc/src/main/java/CustomTask.java", """
             import org.gradle.api.GradleException;
             import org.gradle.api.tasks.TaskAction;
 
@@ -404,10 +640,10 @@ class TaskPropertiesIntegrationTest extends AbstractIntegrationSpec {
                     System.out.println("done checking files");
                 }
             }
-        """
+        """)
 
-        buildFile << """
-            task check(type: CustomTask) {
+        buildFile """
+            tasks.register("check", CustomTask) {
                 check.setSourceFiles("in.txt")
             }
         """

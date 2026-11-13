@@ -15,12 +15,15 @@
  */
 package org.gradle.internal.xml
 
+import groovy.xml.XmlParser
 import org.gradle.api.Action
 import org.gradle.api.XmlProvider
 import org.gradle.api.internal.DomNode
+import org.gradle.internal.UncheckedException
 import org.gradle.test.fixtures.file.TestNameTestDirectoryProvider
 import org.gradle.util.internal.TextUtil
 import org.junit.Rule
+import org.xml.sax.SAXParseException
 import spock.lang.Specification
 
 import javax.xml.parsers.DocumentBuilderFactory
@@ -278,7 +281,7 @@ class XmlTransformerTest extends Specification {
 ''', writer.toString()
     }
 
-    def "DOCTYPE is preserved when transformed as a DOM element"() {
+    def "DOCTYPE with DTD is not allowed when transformed as a DOM element"() {
         StringWriter writer = new StringWriter()
         def node = new DomNode('root')
         node.publicId = 'public-id'
@@ -289,11 +292,12 @@ class XmlTransformerTest extends Specification {
         transformer.transform(node, writer)
 
         then:
-        looksLike """<!DOCTYPE root PUBLIC "public-id" "${node.getSystemId()}">
-<root>
-  <someChild/>
-</root>
-""", writer.toString()
+        def e = thrown(UncheckedException)
+        e.cause instanceof SAXParseException
+        // The English message contains "External DTD: Failed to read external DTD 'thing.dtd', because 'file' access is not allowed".
+        // We check only the locale-independent parts:
+        e.message.contains("DTD")
+        e.message.contains("thing.dtd")
     }
 
     def "indentation correct when writing out DOM element (only) if indenting with spaces"() {

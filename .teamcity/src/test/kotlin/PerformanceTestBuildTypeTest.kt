@@ -14,99 +14,188 @@
  * limitations under the License.
  */
 
-import common.JvmVendor
-import common.JvmVersion
 import common.Os
+import common.PLUGINS_PORTAL_URL_OVERRIDE
 import common.VersionedSettingsBranch
 import configurations.BaseGradleBuildType
 import configurations.PerformanceTest
-import jetbrains.buildServer.configs.kotlin.v2019_2.BuildStep
-import jetbrains.buildServer.configs.kotlin.v2019_2.buildSteps.GradleBuildStep
+import jetbrains.buildServer.configs.kotlin.BuildStep
+import jetbrains.buildServer.configs.kotlin.DslContext
+import jetbrains.buildServer.configs.kotlin.buildSteps.GradleBuildStep
 import model.CIBuildModel
 import model.JsonBasedGradleSubprojectProvider
 import model.PerformanceTestCoverage
 import model.PerformanceTestType
-import model.SpecificBuild
 import model.Stage
-import model.StageNames
-import model.TestCoverage
-import model.TestType
+import model.StageName
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
 import java.io.File
 
 class PerformanceTestBuildTypeTest {
-    private
-    val buildModel = CIBuildModel(
-        projectId = "Gradle_Check",
-        branch = VersionedSettingsBranch("master", true),
-        buildScanTags = listOf("Check"),
-        subprojects = JsonBasedGradleSubprojectProvider(File("../.teamcity/subprojects.json"))
-    )
+    init {
+        DslContext.initForTest()
+    }
+
+    private val buildModel =
+        CIBuildModel(
+            projectId = "Gradle_Check",
+            branch = VersionedSettingsBranch("master"),
+            buildScanTags = listOf("Check"),
+            subprojects = JsonBasedGradleSubprojectProvider(File("../.teamcity/subprojects.json")),
+        )
 
     @Test
-    fun `create correct PerformanceTest build type`() {
-        val performanceTest = PerformanceTest(
-            buildModel, Stage(
-                StageNames.READY_FOR_MERGE,
-                specificBuilds = listOf(
-                    SpecificBuild.BuildDistributions,
-                    SpecificBuild.Gradleception,
-                    SpecificBuild.SmokeTestsMinJavaVersion
+    fun `create correct PerformanceTest build type for Linux`() {
+        val performanceTest =
+            PerformanceTest(
+                buildModel,
+                Stage(
+                    StageName.PULL_REQUEST_FEEDBACK,
+                    performanceTests = listOf(PerformanceTestCoverage(1, PerformanceTestType.PER_COMMIT, Os.LINUX)),
                 ),
-                functionalTests = listOf(
-                    TestCoverage(1, TestType.platform, Os.LINUX, JvmVersion.java8),
-                    TestCoverage(2, TestType.platform, Os.WINDOWS, JvmVersion.java11, vendor = JvmVendor.openjdk)
-                ),
-                performanceTests = listOf(PerformanceTestCoverage(1, PerformanceTestType.per_commit, Os.LINUX))
-            ),
-            PerformanceTestCoverage(1, PerformanceTestType.per_commit, Os.LINUX),
-            "Description",
-            "performance",
-            listOf("largeTestProject", "smallTestProject"),
-            2,
-            extraParameters = "extraParameters"
-        )
+                PerformanceTestCoverage(1, PerformanceTestType.PER_COMMIT, Os.LINUX),
+                "Description",
+                "performance",
+                listOf("largeTestProject", "smallTestProject"),
+                2,
+                extraParameters = "extraParameters",
+            )
 
         assertEquals(
             listOf(
-                "KILL_GRADLE_PROCESSES",
+                "KILL_ALL_GRADLE_PROCESSES",
                 "GRADLE_RUNNER",
-                "CHECK_CLEAN_M2_ANDROID_USER_HOME"
-            ), performanceTest.steps.items.map(BuildStep::name)
+                "KILL_PROCESSES_STARTED_BY_GRADLE",
+                "CLEANUP_PERFORMANCE_TEST_SPLITS",
+            ),
+            performanceTest.steps.items.map(BuildStep::name),
         )
-
-        val expectedRunnerParams = listOf(
-            "-PperformanceBaselines=%performance.baselines%",
-            "-PtestJavaVersion=8",
-            "-PtestJavaVendor=oracle",
-            "-Porg.gradle.java.installations.auto-download=false",
-            "\"-Porg.gradle.java.installations.paths=%linux.java8.oracle.64bit%,%linux.java11.openjdk.64bit%,%linux.java15.openjdk.64bit%,%linux.java16.openjdk.64bit%,%linux.java17.openjdk.64bit%,%linux.java18.openjdk.64bit%\"",
-            "\"-Porg.gradle.performance.branchName=%teamcity.build.branch%\"",
-            "\"-Porg.gradle.performance.db.url=%performance.db.url%\"",
-            "\"-Porg.gradle.performance.db.username=%performance.db.username%\"",
-            "-Dorg.gradle.workers.max=%maxParallelForks%",
-            "-PmaxParallelForks=%maxParallelForks%",
-            "-Dorg.gradle.internal.plugins.portal.url.override=%gradle.plugins.portal.url%",
-            "-s",
-            "--no-configuration-cache",
-            "--daemon",
-            "--continue",
-            "\"-Dscan.tag.PerformanceTest\""
-        )
+        val linuxPaths =
+            listOf(
+                "%linux.java8.oracle.64bit%",
+                "%linux.java11.openjdk.64bit%",
+                "%linux.java17.openjdk.64bit%",
+                "%linux.java21.openjdk.64bit%",
+                "%linux.java25.openjdk.64bit%",
+                "%linux.java27.openjdk.64bit%",
+            )
+        val expectedInstallationPaths = linuxPaths.joinToString(",")
+        val expectedRunnerParams =
+            listOf(
+                "-PperformanceBaselines=%performance.baselines%",
+                "-PtestJavaVersion=17",
+                "-PtestJavaVendor=openjdk",
+                "-PautoDownloadIde=true",
+                "-PrunIdeInHeadlessMode=true",
+                "-Dorg.gradle.java.installations.auto-download=false",
+                "-Porg.gradle.java.installations.auto-download=false",
+                "\"-Dorg.gradle.java.installations.paths=$expectedInstallationPaths\"",
+                "\"-Porg.gradle.java.installations.paths=$expectedInstallationPaths\"",
+                "\"-Porg.gradle.performance.branchName=%teamcity.build.branch%\"",
+                "\"-Porg.gradle.performance.db.url=%performance.db.url%\"",
+                "\"-Porg.gradle.performance.db.username=%performance.db.username%\"",
+                "-DenableTestDistribution=%enableTestDistribution%",
+                "-Dorg.gradle.workers.max=%maxParallelForks%",
+                "-PmaxParallelForks=%maxParallelForks%",
+                PLUGINS_PORTAL_URL_OVERRIDE,
+                "-Dscan.value.tcPipeline=master",
+                "-s",
+                "%additional.gradle.parameters%",
+                "--continue",
+                "-DbuildScan.PartOf=PullRequestFeedback,ReadyforNightly,ReadyforRelease",
+                "-Dscan.tag.PerformanceTest",
+            )
 
         assertEquals(
-            (listOf(
-                "clean",
-                ":performance:largeTestProjectPerformanceTest --channel %performance.channel% ",
-                ":performance:smallTestProjectPerformanceTest --channel %performance.channel% ",
-                "extraParameters"
-            ) + expectedRunnerParams).joinToString(" "),
-            performanceTest.getGradleStep("GRADLE_RUNNER").gradleParams!!.trim()
+            (
+                listOf(
+                    "clean",
+                    ":performance:largeTestProjectPerformanceTest",
+                    ":performance:smallTestProjectPerformanceTest",
+                    "extraParameters",
+                ) + expectedRunnerParams
+            ).joinToString(" "),
+            performanceTest.getGradleStep("GRADLE_RUNNER").gradleParams!!.trim(),
         )
         assertEquals(BuildStep.ExecutionMode.DEFAULT, performanceTest.getGradleStep("GRADLE_RUNNER").executionMode)
     }
 
-    private
-    fun BaseGradleBuildType.getGradleStep(stepName: String) = steps.items.find { it.name == stepName }!! as GradleBuildStep
+    @Test
+    fun `create correct PerformanceTest build type for Windows`() {
+        val performanceTest =
+            PerformanceTest(
+                buildModel,
+                Stage(
+                    StageName.PULL_REQUEST_FEEDBACK,
+                    performanceTests = listOf(PerformanceTestCoverage(2, PerformanceTestType.PER_COMMIT, Os.WINDOWS)),
+                ),
+                PerformanceTestCoverage(2, PerformanceTestType.PER_COMMIT, Os.WINDOWS),
+                "Description",
+                "performance",
+                listOf("largeTestProject", "smallTestProject"),
+                2,
+                extraParameters = "extraParameters",
+            )
+
+        assertEquals(
+            listOf(
+                "KILL_ALL_GRADLE_PROCESSES",
+                "GRADLE_RUNNER",
+                "KILL_PROCESSES_STARTED_BY_GRADLE",
+                "CLEANUP_PERFORMANCE_TEST_SPLITS",
+            ),
+            performanceTest.steps.items.map(BuildStep::name),
+        )
+        val windowsPaths =
+            listOf(
+                "%windows.java8.openjdk.64bit%",
+                "%windows.java11.openjdk.64bit%",
+                "%windows.java17.openjdk.64bit%",
+                "%windows.java21.openjdk.64bit%",
+                "%windows.java25.openjdk.64bit%",
+                "%windows.java27.openjdk.64bit%",
+            )
+        val expectedInstallationPaths = windowsPaths.joinToString(",")
+        val expectedRunnerParams =
+            listOf(
+                "-PperformanceBaselines=%performance.baselines%",
+                "-PtestJavaVersion=17",
+                "-PtestJavaVendor=openjdk",
+                "-PautoDownloadIde=true",
+                "-PrunIdeInHeadlessMode=true",
+                "-Dorg.gradle.java.installations.auto-download=false",
+                "-Porg.gradle.java.installations.auto-download=false",
+                "\"-Dorg.gradle.java.installations.paths=$expectedInstallationPaths\"",
+                "\"-Porg.gradle.java.installations.paths=$expectedInstallationPaths\"",
+                "\"-Porg.gradle.performance.branchName=%teamcity.build.branch%\"",
+                "\"-Porg.gradle.performance.db.url=%performance.db.url%\"",
+                "\"-Porg.gradle.performance.db.username=%performance.db.username%\"",
+                "-DenableTestDistribution=%enableTestDistribution%",
+                "-Dorg.gradle.workers.max=%maxParallelForks%",
+                "-PmaxParallelForks=%maxParallelForks%",
+                PLUGINS_PORTAL_URL_OVERRIDE,
+                "-Dscan.value.tcPipeline=master",
+                "-s",
+                "%additional.gradle.parameters%",
+                "--continue",
+                "-DbuildScan.PartOf=PullRequestFeedback,ReadyforNightly,ReadyforRelease",
+                "-Dscan.tag.PerformanceTest",
+            )
+
+        assertEquals(
+            (
+                listOf(
+                    "clean",
+                    ":performance:largeTestProjectPerformanceTest",
+                    ":performance:smallTestProjectPerformanceTest",
+                    "extraParameters",
+                ) + expectedRunnerParams
+            ).joinToString(" "),
+            performanceTest.getGradleStep("GRADLE_RUNNER").gradleParams!!.trim(),
+        )
+        assertEquals(BuildStep.ExecutionMode.DEFAULT, performanceTest.getGradleStep("GRADLE_RUNNER").executionMode)
+    }
+
+    private fun BaseGradleBuildType.getGradleStep(stepName: String) = steps.items.find { it.name == stepName }!! as GradleBuildStep
 }

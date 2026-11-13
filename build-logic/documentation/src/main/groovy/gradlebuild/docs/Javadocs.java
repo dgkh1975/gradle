@@ -17,6 +17,7 @@
 package gradlebuild.docs;
 
 import org.gradle.api.file.ConfigurableFileCollection;
+import org.gradle.api.file.DirectoryProperty;
 import org.gradle.api.file.RegularFileProperty;
 import org.gradle.api.provider.Property;
 
@@ -25,22 +26,46 @@ import java.net.URI;
 /**
  * Configuration for generating Javadocs
  */
-public abstract class Javadocs {
+public interface Javadocs {
     /**
      * Link to Java API to use when generating Javadoc
      */
-    public abstract Property<URI> getJavaApi();
+    Property<URI> getJavaApi();
+
+    /**
+     * Minimum JDK version that the documented Gradle distribution targets.
+     * Surfaced as the {@code minJdkVersion} Asciidoctor attribute.
+     */
+    Property<Integer> getMinJdkVersion();
+
+    /**
+     * Link to the documentation for the {@code javadoc} tool, referenced from the user manual.
+     */
+    Property<URI> getJavadocReferenceUrl();
+
+    /**
+     * Package list of the Java API used to generate Javadoc offline
+     */
+    DirectoryProperty getJavaPackageListLoc();
+
     /**
      * Link to Groovy API to use when generating Javadoc
      */
-    public abstract Property<URI> getGroovyApi();
+    Property<URI> getGroovyApi();
+
+    /**
+     * Coordinates of the Groovydoc (Javadoc) artifact used to extract the package list for generating Javadoc offline
+     * Example: "org.apache.groovy:groovy-all:4.0.28:groovydoc"
+     */
+    Property<String> getGroovyPackageListSrc();
+
     /**
      * The CSS file to style Javadocs with
      */
-    public abstract RegularFileProperty getJavadocCss();
+    RegularFileProperty getJavadocCss();
 
     /**
      * A collection of the final rendered Javaodcs
      */
-    public abstract ConfigurableFileCollection getRenderedDocumentation();
+    ConfigurableFileCollection getRenderedDocumentation();
 }

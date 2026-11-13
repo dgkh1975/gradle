@@ -16,20 +16,19 @@
 
 package org.gradle.internal.fingerprint.impl;
 
-import org.gradle.api.tasks.FileNormalizer;
-import org.gradle.internal.execution.fingerprint.FileCollectionSnapshotter;
+import org.gradle.internal.execution.model.InputNormalizer;
 import org.gradle.internal.fingerprint.DirectorySensitivity;
-import org.gradle.internal.fingerprint.NameOnlyInputNormalizer;
+import org.gradle.internal.fingerprint.FileNormalizer;
 import org.gradle.internal.fingerprint.hashing.FileSystemLocationSnapshotHasher;
 
 public class NameOnlyFileCollectionFingerprinter extends AbstractFileCollectionFingerprinter {
 
-    public NameOnlyFileCollectionFingerprinter(DirectorySensitivity directorySensitivity, FileCollectionSnapshotter fileCollectionSnapshotter, FileSystemLocationSnapshotHasher normalizedContentHasher) {
-        super(new NameOnlyFingerprintingStrategy(directorySensitivity, normalizedContentHasher), fileCollectionSnapshotter);
+    public NameOnlyFileCollectionFingerprinter(DirectorySensitivity directorySensitivity, FileSystemLocationSnapshotHasher normalizedContentHasher) {
+        super(new NameOnlyFingerprintingStrategy(directorySensitivity, normalizedContentHasher));
     }
 
     @Override
-    public Class<? extends FileNormalizer> getRegisteredType() {
-        return NameOnlyInputNormalizer.class;
+    public FileNormalizer getNormalizer() {
+        return InputNormalizer.NAME_ONLY;
     }
 }

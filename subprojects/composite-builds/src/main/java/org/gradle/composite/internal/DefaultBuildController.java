@@ -17,69 +17,81 @@
 package org.gradle.composite.internal;
 
 import org.gradle.api.CircularReferenceException;
-import org.gradle.api.internal.GradleInternal;
-import org.gradle.api.internal.TaskInternal;
+import org.gradle.api.Task;
+import org.gradle.api.internal.artifacts.transform.TransformStepNode;
+import org.gradle.api.internal.project.ProjectInternal;
+import org.gradle.api.specs.Spec;
+import org.gradle.execution.EntryTaskSelector;
 import org.gradle.execution.plan.Node;
+import org.gradle.execution.plan.QueryableExecutionPlan;
+import org.gradle.execution.plan.TaskInAnotherBuild;
 import org.gradle.execution.plan.TaskNode;
-import org.gradle.execution.plan.TaskNodeFactory;
-import org.gradle.internal.UncheckedException;
 import org.gradle.internal.build.BuildLifecycleController;
 import org.gradle.internal.build.BuildState;
 import org.gradle.internal.build.BuildWorkGraph;
 import org.gradle.internal.build.ExecutionResult;
-import org.gradle.internal.build.ExportedTaskNode;
-import org.gradle.internal.concurrent.Stoppable;
 import org.gradle.internal.graph.CachingDirectedGraphWalker;
 import org.gradle.internal.graph.DirectedGraphRenderer;
 import org.gradle.internal.logging.text.StyledTextOutput;
 import org.gradle.internal.operations.BuildOperationRef;
 import org.gradle.internal.operations.CurrentBuildOperationRef;
 import org.gradle.internal.work.WorkerLeaseService;
+import org.gradle.util.Path;
 
 import java.io.StringWriter;
-import java.util.ArrayList;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.Lock;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+import java.util.function.Predicate;
 
-class DefaultBuildController implements BuildController, Stoppable {
+class DefaultBuildController implements BuildController {
     private enum State {
         DiscoveringTasks, ReadyToRun, RunningTasks, Finished
     }
 
+    private final Path buildPath;
     private final BuildWorkGraph workGraph;
-    private final Set<ExportedTaskNode> scheduled = new LinkedHashSet<>();
-    private final Set<ExportedTaskNode> queuedForExecution = new LinkedHashSet<>();
+    private final Set<Node> scheduled = new LinkedHashSet<>();
+    private final Set<Node> queuedForExecution = new LinkedHashSet<>();
     private final WorkerLeaseService workerLeaseService;
 
     private State state = State.DiscoveringTasks;
-    // Lock protects the following state
-    private final Lock lock = new ReentrantLock();
-    private final Condition stateChange = lock.newCondition();
-    private boolean finished;
-    private final List<Throwable> executionFailures = new ArrayList<>();
 
     public DefaultBuildController(BuildState build, WorkerLeaseService workerLeaseService) {
         this.workerLeaseService = workerLeaseService;
+        this.buildPath = build.getIdentityPath();
         this.workGraph = build.getWorkGraph().newWorkGraph();
     }
 
     @Override
-    public void queueForExecution(ExportedTaskNode taskNode) {
+    public void queueForExecution(Node node) {
         assertInState(State.DiscoveringTasks);
-        queuedForExecution.add(taskNode);
+        assertBelongsToThisBuild(node);
+        queuedForExecution.add(node);
     }
 
     @Override
     public void populateWorkGraph(Consumer<? super BuildLifecycleController.WorkGraphBuilder> action) {
         assertInState(State.DiscoveringTasks);
         workGraph.populateWorkGraph(action);
+    }
+
+    @Override
+    public void addFilter(Spec<Task> filter) {
+        assertInState(State.DiscoveringTasks);
+        workGraph.addFilter(filter);
+    }
+
+    @Override
+    public void addFinalization(BiConsumer<EntryTaskSelector.Context, QueryableExecutionPlan> finalization) {
+        assertInState(State.DiscoveringTasks);
+        workGraph.addFinalization(finalization);
     }
 
     @Override
@@ -106,10 +118,10 @@ class DefaultBuildController implements BuildController, Stoppable {
 
         // TODO - This check should live in the task execution plan, so that it can reuse checks that have already been performed and
         //   also check for cycles across all nodes
-        Set<TaskInternal> visited = new HashSet<>();
-        Set<TaskInternal> visiting = new HashSet<>();
-        for (ExportedTaskNode node : scheduled) {
-            checkForCyclesFor(node.getTask(), visited, visiting);
+        Set<Node> visited = new HashSet<>();
+        Set<Node> visiting = new HashSet<>();
+        for (Node node : scheduled) {
+            checkForCyclesFor(node, visited, visiting);
         }
         workGraph.finalizeGraph();
 
@@ -117,44 +129,27 @@ class DefaultBuildController implements BuildController, Stoppable {
     }
 
     @Override
-    public void startExecution(ExecutorService executorService) {
+    @SuppressWarnings("FutureReturnValueIgnored") //TODO: evaluate errorprone suppression (https://github.com/gradle/gradle/issues/35864)
+    public void startExecution(ExecutorService executorService, Consumer<ExecutionResult<Void>> completionHandler) {
         assertInState(State.ReadyToRun);
-        executorService.submit(new BuildOpRunnable(CurrentBuildOperationRef.instance().get()));
+        executorService.submit(new BuildOpRunnable(CurrentBuildOperationRef.instance().get(), completionHandler));
         state = State.RunningTasks;
     }
 
     @Override
-    public ExecutionResult<Void> awaitCompletion() {
-        assertInState(State.RunningTasks);
-        doAwaitCompletion();
-        state = State.Finished;
-        lock.lock();
-        try {
-            return ExecutionResult.maybeFailed(executionFailures);
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    @Override
     public void stop() {
-        if (state == State.RunningTasks) {
-            throw new IllegalStateException("Build is currently running tasks.");
-        }
+        workGraph.stop();
     }
 
-    private void doAwaitCompletion() {
-        // Ensure that this thread does not hold locks while waiting and so prevent this work from completing
-        workerLeaseService.blocking(() -> {
-            lock.lock();
-            try {
-                while (!finished) {
-                    awaitStateChange();
-                }
-            } finally {
-                lock.unlock();
-            }
-        });
+    private void assertBelongsToThisBuild(Node node) {
+        ProjectInternal owningProject = node.getOwningProject();
+        if (owningProject == null) {
+            throw new IllegalArgumentException("Cannot queue " + node + " for execution in build " + buildPath + ", as it does not belong to any build.");
+        }
+        Path owningBuild = owningProject.getProjectIdentity().getBuildPath();
+        if (!owningBuild.equals(buildPath)) {
+            throw new IllegalArgumentException("Cannot queue " + node + " for execution in build " + buildPath + ", as it belongs to build " + owningBuild + ".");
+        }
     }
 
     private void assertInState(State expectedState) {
@@ -163,108 +158,100 @@ class DefaultBuildController implements BuildController, Stoppable {
         }
     }
 
-    private void checkForCyclesFor(TaskInternal task, Set<TaskInternal> visited, Set<TaskInternal> visiting) {
+    private static void checkForCyclesFor(Node task, Set<Node> visited, Set<Node> visiting) {
         if (visited.contains(task)) {
             // Already checked
             return;
         }
         if (!visiting.add(task)) {
             // Visiting dependencies -> have found a cycle
-            CachingDirectedGraphWalker<TaskInternal, Void> graphWalker = new CachingDirectedGraphWalker<>((node, values, connectedNodes) -> visitDependenciesOf(node, connectedNodes::add));
+            CachingDirectedGraphWalker<Node, Void> graphWalker = new CachingDirectedGraphWalker<>((node, values, connectedNodes) -> visitDependenciesOf(node, connectedNodes::add));
             graphWalker.add(task);
-            List<Set<TaskInternal>> cycles = graphWalker.findCycles();
-            Set<TaskInternal> cycle = cycles.get(0);
+            List<Set<Node>> cycles = graphWalker.findCycles();
+            Set<Node> cycle = cycles.get(0);
 
-            DirectedGraphRenderer<TaskInternal> graphRenderer = new DirectedGraphRenderer<>((node, output) -> output.withStyle(StyledTextOutput.Style.Identifier).text(node.getIdentityPath()), (node, values, connectedNodes) -> visitDependenciesOf(node, dep -> {
-                if (cycle.contains(dep)) {
-                    connectedNodes.add(dep);
-                }
-            }));
+            // If the cycle has no reportable nodes, report all of its nodes.
+            Predicate<Node> isReported = cycle.stream().anyMatch(DefaultBuildController::isReportableInCycle)
+                ? DefaultBuildController::isReportableInCycle
+                : node -> true;
+            // Report the cycle starting from the first reportable node.
+            Node root = isReported.test(task) ? task : cycle.stream().filter(isReported).findFirst().orElse(task);
+
+            DirectedGraphRenderer<Node> graphRenderer = new DirectedGraphRenderer<>(
+                (node, output, alreadySeen) -> output.withStyle(StyledTextOutput.Style.Identifier).text(node.getDisplayName()),
+                (node, values, connectedNodes) -> visitReportedDependenciesOf(node, cycle, isReported, connectedNodes::add)
+            );
             StringWriter writer = new StringWriter();
-            graphRenderer.renderTo(task, writer);
-            throw new CircularReferenceException(String.format("Circular dependency between the following tasks:%n%s", writer.toString()));
+            graphRenderer.renderTo(root, writer);
+            throw new CircularReferenceException(String.format("Circular dependency between the following tasks:%n%s", writer));
         }
         visitDependenciesOf(task, dep -> checkForCyclesFor(dep, visited, visiting));
         visiting.remove(task);
         visited.add(task);
     }
 
-    private void visitDependenciesOf(TaskInternal task, Consumer<TaskInternal> consumer) {
-        TaskNodeFactory taskNodeFactory = ((GradleInternal) task.getProject().getGradle()).getServices().get(TaskNodeFactory.class);
-        TaskNode node = taskNodeFactory.getOrCreateNode(task);
-        for (Node dependency : node.getAllSuccessors()) {
-            if (dependency instanceof TaskNode) {
-                consumer.accept(((TaskNode) dependency).getTask());
+    /**
+     * Only report task and transform nodes involved in cycles, as they are more actionable and don't leak
+     * internal node types to users.
+     */
+    private static boolean isReportableInCycle(Node node) {
+        return node instanceof TaskNode || node instanceof TransformStepNode;
+    }
+
+    /**
+     * Visits the reported nodes in the given cycle that the given node depends on, either directly or
+     * through nodes in the cycle that are not reported.
+     */
+    private static void visitReportedDependenciesOf(Node node, Set<Node> cycle, Predicate<Node> isReported, Consumer<? super Node> visitor) {
+        Set<Node> seen = new HashSet<>();
+        Deque<Node> queue = new ArrayDeque<>();
+        visitDependenciesOf(node, queue::add);
+        while (!queue.isEmpty()) {
+            Node dep = queue.removeFirst();
+            if (!cycle.contains(dep) || !seen.add(dep)) {
+                continue;
+            }
+            if (isReported.test(dep)) {
+                visitor.accept(dep);
+            } else {
+                // Skip over the unreported node, searching its dependencies instead, so that the
+                // given node is connected to the reported nodes that it reaches through this node.
+                visitDependenciesOf(dep, queue::add);
             }
         }
     }
 
-    private void doRun() {
+    private static void visitDependenciesOf(Node node, Consumer<? super Node> visitor) {
+        node.getAllSuccessors().forEach(dep -> {
+            if (dep instanceof TaskInAnotherBuild) {
+                // Hop over the included build reference so we can detect cycles across build work graphs.
+                visitor.accept(((TaskInAnotherBuild) dep).getTargetNode());
+            } else {
+                visitor.accept(dep);
+            }
+        });
+    }
+
+    private ExecutionResult<Void> doRun() {
         try {
-            workerLeaseService.runAsWorkerThread(this::doBuild);
+            return workerLeaseService.runAsWorkerThread(workGraph::runWork);
         } catch (Throwable t) {
-            executionFailed(t);
-        } finally {
-            markFinished();
-        }
-    }
-
-    private void markFinished() {
-        lock.lock();
-        try {
-            finished = true;
-            stateChange.signalAll();
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    private void awaitStateChange() {
-        try {
-            stateChange.await();
-        } catch (InterruptedException e) {
-            throw UncheckedException.throwAsUncheckedException(e);
-        }
-    }
-
-    private void doBuild() {
-        ExecutionResult<Void> result = workGraph.runWork();
-        executionFinished(result);
-    }
-
-    private void executionFinished(ExecutionResult<Void> result) {
-        lock.lock();
-        try {
-            executionFailures.addAll(result.getFailures());
-        } finally {
-            lock.unlock();
-        }
-    }
-
-    private void executionFailed(Throwable failure) {
-        lock.lock();
-        try {
-            executionFailures.add(failure);
-        } finally {
-            lock.unlock();
+            return ExecutionResult.failed(t);
         }
     }
 
     private class BuildOpRunnable implements Runnable {
         private final BuildOperationRef parentBuildOperation;
+        private final Consumer<ExecutionResult<Void>> completionHandler;
 
-        BuildOpRunnable(BuildOperationRef parentBuildOperation) {
+        BuildOpRunnable(BuildOperationRef parentBuildOperation, Consumer<ExecutionResult<Void>> completionHandler) {
             this.parentBuildOperation = parentBuildOperation;
+            this.completionHandler = completionHandler;
         }
 
         @Override
         public void run() {
-            CurrentBuildOperationRef.instance().set(parentBuildOperation);
-            try {
-                doRun();
-            } finally {
-                CurrentBuildOperationRef.instance().set(null);
-            }
+            CurrentBuildOperationRef.instance().with(parentBuildOperation, () -> completionHandler.accept(doRun()));
         }
     }
 }

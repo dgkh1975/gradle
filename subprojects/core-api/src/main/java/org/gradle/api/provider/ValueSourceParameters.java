@@ -16,13 +16,20 @@
 
 package org.gradle.api.provider;
 
-import org.gradle.api.Incubating;
+import org.gradle.api.internal.parameters.NoneParameters;
 
 /**
  * Marker interface for parameter objects to {@link ValueSource}s.
  *
  * <p>
+ * Parameters are data holders for the inputs of a value source.
  * Parameter types should be interfaces, only declaring getters for {@link org.gradle.api.provider.Property}-like objects.
+ * They are configured in the {@link ValueSourceSpec} and isolated before the value is obtained.
+ * </p>
+ * <p>
+ * Parameters must not inject services. An {@code @Inject} getter or constructor on a parameters
+ * type is deprecated and will fail with an error in Gradle 10. Compute values that need a service
+ * where the provider is created and pass them in as parameters.
  * </p>
  * <pre class='autoTested'>
  * public interface MyParameters extends ValueSourceParameters {
@@ -32,15 +39,13 @@ import org.gradle.api.Incubating;
  *
  * @since 6.1
  */
-@Incubating
 public interface ValueSourceParameters {
     /**
      * Used for sources without parameters.
      *
      * @since 6.1
      */
-    @Incubating
-    final class None implements ValueSourceParameters {
+    final class None extends NoneParameters implements ValueSourceParameters {
         private None() {
         }
     }

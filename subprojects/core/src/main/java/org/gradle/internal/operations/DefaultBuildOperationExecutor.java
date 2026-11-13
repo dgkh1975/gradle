@@ -16,23 +16,21 @@
 
 package org.gradle.internal.operations;
 
-import com.google.common.collect.Lists;
 import org.gradle.api.Action;
 import org.gradle.api.GradleException;
-import org.gradle.concurrent.ParallelismConfiguration;
 import org.gradle.internal.SystemProperties;
+import org.gradle.internal.concurrent.CompositeStoppable;
 import org.gradle.internal.concurrent.ExecutorFactory;
 import org.gradle.internal.concurrent.ManagedExecutor;
 import org.gradle.internal.concurrent.Stoppable;
 import org.gradle.internal.exceptions.DefaultMultiCauseException;
-import org.gradle.internal.logging.progress.ProgressLogger;
-import org.gradle.internal.logging.progress.ProgressLoggerFactory;
-import org.gradle.internal.time.Clock;
+import org.gradle.internal.resources.ResourceLockCoordinationService;
+import org.gradle.internal.work.WorkerLeaseQueueProcessor;
+import org.gradle.internal.work.WorkerLeaseService;
+import org.gradle.internal.work.WorkerLimits;
 
-import javax.annotation.Nullable;
-import java.util.HashMap;
+import java.util.ArrayList;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 public class DefaultBuildOperationExecutor implements BuildOperationExecutor, Stoppable {
@@ -40,98 +38,75 @@ public class DefaultBuildOperationExecutor implements BuildOperationExecutor, St
 
     private final BuildOperationRunner runner;
     private final BuildOperationQueueFactory buildOperationQueueFactory;
-    private final Map<BuildOperationConstraint, ManagedExecutor> managedExecutors = new HashMap<>();
-    private final CurrentBuildOperationRef currentBuildOperationRef = CurrentBuildOperationRef.instance();
+    private final CurrentBuildOperationRef currentBuildOperationRef;
+
+    private final WorkerLeaseQueueProcessor maxWorkersProcessor;
+    private final ManagedExecutor maxWorkersBackingExecutor;
+    private final ManagedExecutor unconstrainedExecutor;
 
     public DefaultBuildOperationExecutor(
-        BuildOperationListener listener,
-        Clock clock,
-        ProgressLoggerFactory progressLoggerFactory,
+        BuildOperationRunner buildOperationRunner,
+        CurrentBuildOperationRef currentBuildOperationRef,
         BuildOperationQueueFactory buildOperationQueueFactory,
         ExecutorFactory executorFactory,
-        ParallelismConfiguration parallelismConfiguration,
-        BuildOperationIdFactory buildOperationIdFactory
+        ResourceLockCoordinationService coordinationService,
+        WorkerLeaseService workerLeaseService,
+        WorkerLimits workerLimits
     ) {
-        this.runner = new DefaultBuildOperationRunner(
-            currentBuildOperationRef,
-            clock::getCurrentTime,
-            buildOperationIdFactory,
-            () -> new ListenerAdapter(listener, progressLoggerFactory, clock)
-        );
+        this.runner = buildOperationRunner;
+        this.currentBuildOperationRef = currentBuildOperationRef;
         this.buildOperationQueueFactory = buildOperationQueueFactory;
-        managedExecutors.put(BuildOperationConstraint.MAX_WORKERS, executorFactory.create("Build operations", parallelismConfiguration.getMaxWorkerCount()));
-        managedExecutors.put(BuildOperationConstraint.UNCONSTRAINED, executorFactory.create("Unconstrained build operations", parallelismConfiguration.getMaxWorkerCount() * 10));
-    }
 
-    @Override
-    public void run(RunnableBuildOperation buildOperation) {
-        runner.run(buildOperation);
-    }
-
-    @Override
-    public <T> T call(CallableBuildOperation<T> buildOperation) {
-        return runner.call(buildOperation);
-    }
-
-    @Override
-    public <O extends BuildOperation> void execute(O buildOperation, BuildOperationWorker<O> worker, @Nullable BuildOperationState defaultParent) {
-        runner.execute(buildOperation, worker, defaultParent);
-    }
-
-    @Override
-    public BuildOperationContext start(BuildOperationDescriptor.Builder descriptor) {
-        return runner.start(descriptor);
-    }
-
-    @Override
-    public BuildOperationRef getCurrentOperation() {
-        BuildOperationRef current = getCurrentBuildOperation();
-        if (current == null) {
-            throw new IllegalStateException("No operation is currently running.");
-        }
-        return current;
+        // -1 because waitForCompletion thread executes work as well. See https://github.com/gradle/gradle/issues/3273
+        // Floor at 1 so single-worker builds still have at least one backing thread; WorkerCounter would refuse to spawn
+        // any worker if core==0, which would force every op onto the submitter's drain pass.
+        int maxWorkersWithoutCurrentThread = Math.max(1, workerLimits.getMaxWorkerCount() - 1);
+        this.maxWorkersBackingExecutor = executorFactory.create(
+            "Build operations",
+            workerLimits.getMaxWorkerCount()
+        );
+        this.maxWorkersProcessor = new WorkerLeaseQueueProcessor(
+            coordinationService,
+            workerLeaseService,
+            maxWorkersBackingExecutor,
+            maxWorkersWithoutCurrentThread,
+            workerLimits.getMaxUnconstrainedWorkerCount()
+        );
+        this.unconstrainedExecutor = executorFactory.create(
+            "Unconstrained build operations",
+            workerLimits.getMaxUnconstrainedWorkerCount()
+        );
     }
 
     @Override
     public <O extends RunnableBuildOperation> void runAll(Action<BuildOperationQueue<O>> schedulingAction) {
-        runAll(schedulingAction, BuildOperationConstraint.MAX_WORKERS);
-    }
-
-    @Override
-    public <O extends RunnableBuildOperation> void runAll(Action<BuildOperationQueue<O>> schedulingAction, BuildOperationConstraint buildOperationConstraint) {
-        executeInParallel(false, new QueueWorker<>(getCurrentBuildOperation(), RunnableBuildOperation::run), schedulingAction, buildOperationConstraint);
+        executeInParallel(false, RunnableBuildOperation::run, schedulingAction);
     }
 
     @Override
     public <O extends RunnableBuildOperation> void runAllWithAccessToProjectState(Action<BuildOperationQueue<O>> schedulingAction) {
-        runAllWithAccessToProjectState(schedulingAction, BuildOperationConstraint.MAX_WORKERS);
-    }
-
-    @Override
-    public <O extends RunnableBuildOperation> void runAllWithAccessToProjectState(Action<BuildOperationQueue<O>> schedulingAction, BuildOperationConstraint buildOperationConstraint) {
-        executeInParallel(true, new QueueWorker<>(getCurrentBuildOperation(), RunnableBuildOperation::run), schedulingAction, buildOperationConstraint);
+        executeInParallel(true, RunnableBuildOperation::run, schedulingAction);
     }
 
     @Override
     public <O extends BuildOperation> void runAll(BuildOperationWorker<O> worker, Action<BuildOperationQueue<O>> schedulingAction) {
-        runAll(worker, schedulingAction, BuildOperationConstraint.MAX_WORKERS);
+        executeInParallel(false, worker, schedulingAction);
     }
 
-    @Override
-    public <O extends BuildOperation> void runAll(BuildOperationWorker<O> worker, Action<BuildOperationQueue<O>> schedulingAction, BuildOperationConstraint buildOperationConstraint) {
-        executeInParallel(false, new QueueWorker<>(getCurrentBuildOperation(), worker), schedulingAction, buildOperationConstraint);
-    }
+    private <O extends BuildOperation> void executeInParallel(
+        boolean allowAccessToProjectState,
+        BuildOperationWorker<O> worker,
+        Action<BuildOperationQueue<O>> queueAction
+    ) {
+        BuildOperationQueue<O> queue = buildOperationQueueFactory.create(
+            maxWorkersProcessor.createSubmissionQueue(),
+            unconstrainedExecutor,
+            allowAccessToProjectState,
+            operation -> runner.execute(operation, worker),
+            currentBuildOperationRef.get()
+        );
 
-    @Nullable
-    private BuildOperationState getCurrentBuildOperation() {
-        return (BuildOperationState) currentBuildOperationRef.get();
-    }
-
-    private <O extends BuildOperation> void executeInParallel(boolean allowAccessToProjectState, BuildOperationQueue.QueueWorker<O> worker, Action<BuildOperationQueue<O>> queueAction, BuildOperationConstraint buildOperationConstraint) {
-        ManagedExecutor executor = managedExecutors.get(buildOperationConstraint);
-        BuildOperationQueue<O> queue = buildOperationQueueFactory.create(executor, allowAccessToProjectState, worker);
-
-        List<GradleException> failures = Lists.newArrayList();
+        List<GradleException> failures = new ArrayList<>();
         try {
             queueAction.execute(queue);
         } catch (Exception e) {
@@ -160,82 +135,9 @@ public class DefaultBuildOperationExecutor implements BuildOperationExecutor, St
 
     @Override
     public void stop() {
-        for (ManagedExecutor pool : managedExecutors.values()) {
-            pool.stop();
-        }
-    }
-
-    private static class ListenerAdapter implements DefaultBuildOperationRunner.BuildOperationExecutionListener {
-        private final BuildOperationListener buildOperationListener;
-        private final ProgressLoggerFactory progressLoggerFactory;
-        private final Clock clock;
-        private ProgressLogger progressLogger;
-        private ProgressLogger statusProgressLogger;
-
-        public ListenerAdapter(BuildOperationListener buildOperationListener, ProgressLoggerFactory progressLoggerFactory, Clock clock) {
-            this.buildOperationListener = buildOperationListener;
-            this.progressLoggerFactory = progressLoggerFactory;
-            this.clock = clock;
-        }
-
-        @Override
-        public void start(BuildOperationDescriptor descriptor, BuildOperationState operationState) {
-            buildOperationListener.started(descriptor, new OperationStartEvent(operationState.getStartTime()));
-            ProgressLogger progressLogger = progressLoggerFactory.newOperation(DefaultBuildOperationExecutor.class, descriptor);
-            this.progressLogger = progressLogger.start(descriptor.getDisplayName(), descriptor.getProgressDisplayName());
-        }
-
-        @Override
-        public void progress(BuildOperationDescriptor descriptor, String status) {
-            // Currently, need to start a new progress operation to hold the status, as changing the status of the progress operation replaces the
-            // progress display name on the console, whereas we want to display both the progress display name and the status
-            // This should be pushed down into the progress logger infrastructure so that an operation can have both a display name (that doesn't change) and
-            // a status (that does)
-            if (statusProgressLogger == null) {
-                statusProgressLogger = progressLoggerFactory.newOperation(DefaultBuildOperationExecutor.class, progressLogger);
-                statusProgressLogger.start(descriptor.getDisplayName(), status);
-            } else {
-                statusProgressLogger.progress(status);
-            }
-        }
-
-        @Override
-        public void progress(BuildOperationDescriptor descriptor, long progress, long total, String units, String status) {
-            progress(descriptor, status);
-            buildOperationListener.progress(descriptor.getId(), new OperationProgressEvent(clock.getCurrentTime(), new OperationProgressDetails(progress, total, units)));
-        }
-
-        @Override
-        public void stop(BuildOperationDescriptor descriptor, BuildOperationState operationState, @Nullable BuildOperationState parent, DefaultBuildOperationRunner.ReadableBuildOperationContext context) {
-            if (statusProgressLogger != null) {
-                statusProgressLogger.completed();
-            }
-            progressLogger.completed(context.getStatus(), context.getFailure() != null);
-            buildOperationListener.finished(descriptor, new OperationFinishEvent(operationState.getStartTime(), clock.getCurrentTime(), context.getFailure(), context.getResult()));
-        }
-
-        @Override
-        public void close(BuildOperationDescriptor descriptor, BuildOperationState operationState) {
-        }
-    }
-
-    private class QueueWorker<O extends BuildOperation> implements BuildOperationQueue.QueueWorker<O> {
-        private final BuildOperationState parent;
-        private final BuildOperationWorker<? super O> worker;
-
-        private QueueWorker(@Nullable BuildOperationState parent, BuildOperationWorker<? super O> worker) {
-            this.parent = parent;
-            this.worker = worker;
-        }
-
-        @Override
-        public String getDisplayName() {
-            return "runnable worker";
-        }
-
-        @Override
-        public void execute(O buildOperation) {
-            runner.execute(buildOperation, worker, parent);
-        }
+        // Shut down the lease-aware service first so it stops accepting new work; then stop the
+        // backing pools, which waits for in-flight work to drain.
+        maxWorkersProcessor.shutdown();
+        CompositeStoppable.stoppable(maxWorkersBackingExecutor, unconstrainedExecutor).stop();
     }
 }

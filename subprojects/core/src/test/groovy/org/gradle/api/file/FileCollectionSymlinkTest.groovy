@@ -18,16 +18,16 @@ package org.gradle.api.file
 import org.gradle.api.Project
 import org.gradle.test.fixtures.file.TestFile
 import org.gradle.test.fixtures.file.TestNameTestDirectoryProvider
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.FileSystemTestPreconditions
+
 import org.gradle.testfixtures.ProjectBuilder
-import org.gradle.util.Requires
-import org.gradle.util.TestPrecondition
 import org.gradle.util.UsesNativeServices
 import org.junit.ClassRule
 import spock.lang.Shared
 import spock.lang.Specification
-import spock.lang.Unroll
 
-@Requires(TestPrecondition.SYMLINKS)
+@Requires(FileSystemTestPreconditions.Symlinks)
 @UsesNativeServices
 class FileCollectionSymlinkTest extends Specification {
     @Shared Project project = ProjectBuilder.builder().build()
@@ -43,7 +43,6 @@ class FileCollectionSymlinkTest extends Specification {
         symlink.createLink(symlinked)
     }
 
-    @Unroll
     def "#desc can handle symlinks"() {
         expect:
         fileCollection.contains(file)

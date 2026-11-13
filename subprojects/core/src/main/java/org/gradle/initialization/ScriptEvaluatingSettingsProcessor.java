@@ -16,7 +16,7 @@
 
 package org.gradle.initialization;
 
-import org.gradle.StartParameter;
+import org.gradle.api.internal.StartParameterInternal;
 import org.gradle.api.internal.GradleInternal;
 import org.gradle.api.internal.SettingsInternal;
 import org.gradle.api.internal.initialization.ClassLoaderScope;
@@ -24,15 +24,12 @@ import org.gradle.api.internal.properties.GradleProperties;
 import org.gradle.configuration.ScriptPlugin;
 import org.gradle.configuration.ScriptPluginFactory;
 import org.gradle.groovy.scripts.TextResourceScriptSource;
+import org.gradle.internal.composite.BuildIncludeListener;
 import org.gradle.internal.resource.TextFileResourceLoader;
 import org.gradle.internal.time.Time;
 import org.gradle.internal.time.Timer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
-import java.util.Map;
-
-import static java.util.Collections.emptyMap;
 
 
 public class ScriptEvaluatingSettingsProcessor implements SettingsProcessor {
@@ -42,36 +39,48 @@ public class ScriptEvaluatingSettingsProcessor implements SettingsProcessor {
     private final GradleProperties gradleProperties;
     private final ScriptPluginFactory configurerFactory;
     private final TextFileResourceLoader textFileResourceLoader;
+    private final BuildIncludeListener buildIncludeListener;
 
-    public ScriptEvaluatingSettingsProcessor(ScriptPluginFactory configurerFactory,
-                                             SettingsFactory settingsFactory,
-                                             GradleProperties gradleProperties,
-                                             TextFileResourceLoader textFileResourceLoader) {
+    public ScriptEvaluatingSettingsProcessor(
+        ScriptPluginFactory configurerFactory,
+        SettingsFactory settingsFactory,
+        GradleProperties gradleProperties,
+        TextFileResourceLoader textFileResourceLoader,
+        BuildIncludeListener buildIncludeListener
+    ) {
         this.configurerFactory = configurerFactory;
         this.settingsFactory = settingsFactory;
         this.gradleProperties = gradleProperties;
         this.textFileResourceLoader = textFileResourceLoader;
+        this.buildIncludeListener = buildIncludeListener;
     }
 
     @Override
-    public SettingsInternal process(GradleInternal gradle,
-                                    SettingsLocation settingsLocation,
-                                    ClassLoaderScope baseClassLoaderScope,
-                                    StartParameter startParameter) {
+    public SettingsState process(
+        GradleInternal gradle,
+        SettingsLocation settingsLocation,
+        ClassLoaderScope baseClassLoaderScope,
+        StartParameterInternal startParameter
+    ) {
         Timer settingsProcessingClock = Time.startTimer();
-        Map<String, String> properties = gradleProperties.mergeProperties(emptyMap());
         TextResourceScriptSource settingsScript = new TextResourceScriptSource(textFileResourceLoader.loadFile("settings file", settingsLocation.getSettingsFile()));
-        SettingsInternal settings = settingsFactory.createSettings(gradle, settingsLocation.getSettingsDir(), settingsScript, properties, startParameter, baseClassLoaderScope);
+        SettingsState state = settingsFactory.createSettings(gradle, settingsLocation.getSettingsDir(), settingsScript, gradleProperties, startParameter, baseClassLoaderScope);
 
+        SettingsInternal settings = state.getSettings();
         gradle.getBuildListenerBroadcaster().beforeSettings(settings);
-        applySettingsScript(settingsScript, settings);
+        settings.getCaches().finalizeConfiguration(gradle);
+        try {
+            applySettingsScript(settingsScript, settings);
+        } catch (Exception e) {
+            buildIncludeListener.settingsScriptFailed(settings);
+            throw e;
+        }
         LOGGER.debug("Timing: Processing settings took: {}", settingsProcessingClock.getElapsed());
-        return settings;
+        return state;
     }
 
     private void applySettingsScript(TextResourceScriptSource settingsScript, final SettingsInternal settings) {
         ScriptPlugin configurer = configurerFactory.create(settingsScript, settings.getBuildscript(), settings.getClassLoaderScope(), settings.getBaseClassLoaderScope(), true);
         configurer.apply(settings);
     }
-
 }

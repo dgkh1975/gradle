@@ -15,23 +15,39 @@
  */
 package org.gradle.composite.internal;
 
+import org.gradle.api.Task;
+import org.gradle.api.specs.Spec;
+import org.gradle.execution.EntryTaskSelector;
+import org.gradle.execution.plan.Node;
+import org.gradle.execution.plan.QueryableExecutionPlan;
 import org.gradle.internal.build.BuildLifecycleController;
 import org.gradle.internal.build.ExecutionResult;
-import org.gradle.internal.build.ExportedTaskNode;
+import org.gradle.internal.concurrent.Stoppable;
 
 import java.util.concurrent.ExecutorService;
+import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
-public interface BuildController {
+public interface BuildController extends Stoppable {
     /**
      * Adds tasks and nodes to the work graph of this build.
      */
     void populateWorkGraph(Consumer<? super BuildLifecycleController.WorkGraphBuilder> action);
 
     /**
-     * Queues the given task for execution. Does not schedule the task, use {@link #scheduleQueuedTasks()} for this.
+     * Adds a filter to the work graph of this build.
      */
-    void queueForExecution(ExportedTaskNode taskNode);
+    void addFilter(Spec<Task> filter);
+
+    /**
+     * Adds a finalization step to the work graph of this build.
+     */
+    void addFinalization(BiConsumer<EntryTaskSelector.Context, QueryableExecutionPlan> finalization);
+
+    /**
+     * Queues the given node for execution. Does not schedule the task, use {@link #scheduleQueuedTasks()} for this.
+     */
+    void queueForExecution(Node node);
 
     /**
      * Schedules any queued tasks. When this method returns true, then some tasks where scheduled for this build and
@@ -47,12 +63,7 @@ public interface BuildController {
     void finalizeWorkGraph();
 
     /**
-     * Must call {@link #scheduleQueuedTasks()} prior to calling this method.
+     * Must call {@link #scheduleQueuedTasks()} and {@link #finalizeWorkGraph()} prior to calling this method.
      */
-    void startExecution(ExecutorService executorService);
-
-    /**
-     * Awaits completion of work execution, returning any failures in the result.
-     */
-    ExecutionResult<Void> awaitCompletion();
+    void startExecution(ExecutorService executorService, Consumer<ExecutionResult<Void>> completionHandler);
 }

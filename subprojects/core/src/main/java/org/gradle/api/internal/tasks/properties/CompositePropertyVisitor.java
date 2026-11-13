@@ -16,11 +16,16 @@
 
 package org.gradle.api.internal.tasks.properties;
 
-import org.gradle.api.tasks.FileNormalizer;
+import org.gradle.api.services.BuildService;
 import org.gradle.internal.fingerprint.DirectorySensitivity;
+import org.gradle.internal.fingerprint.FileNormalizer;
 import org.gradle.internal.fingerprint.LineEndingSensitivity;
-
-import javax.annotation.Nullable;
+import org.gradle.internal.properties.InputBehavior;
+import org.gradle.internal.properties.InputFilePropertyType;
+import org.gradle.internal.properties.OutputFilePropertyType;
+import org.gradle.internal.properties.PropertyValue;
+import org.gradle.internal.properties.PropertyVisitor;
+import org.jspecify.annotations.Nullable;
 
 public class CompositePropertyVisitor implements PropertyVisitor {
     private final PropertyVisitor[] visitors;
@@ -33,27 +38,23 @@ public class CompositePropertyVisitor implements PropertyVisitor {
     public void visitInputFileProperty(
         String propertyName,
         boolean optional,
-        boolean skipWhenEmpty,
+        InputBehavior behavior,
         DirectorySensitivity directorySensitivity,
         LineEndingSensitivity lineEndingSensitivity,
-        boolean incremental,
-        @Nullable Class<? extends FileNormalizer> fileNormalizer,
+        @Nullable FileNormalizer fileNormalizer,
         PropertyValue value,
-        InputFilePropertyType filePropertyType,
-        ContentTracking contentTracking
+        InputFilePropertyType filePropertyType
     ) {
         for (PropertyVisitor visitor : visitors) {
             visitor.visitInputFileProperty(
                 propertyName,
                 optional,
-                skipWhenEmpty,
+                behavior,
                 directorySensitivity,
                 lineEndingSensitivity,
-                incremental,
                 fileNormalizer,
                 value,
-                filePropertyType,
-                contentTracking
+                filePropertyType
             );
         }
     }
@@ -66,9 +67,9 @@ public class CompositePropertyVisitor implements PropertyVisitor {
     }
 
     @Override
-    public void visitOutputFileProperty(String propertyName, boolean optional, ContentTracking contentTracking, PropertyValue value, OutputFilePropertyType filePropertyType) {
+    public void visitOutputFileProperty(String propertyName, boolean optional, PropertyValue value, OutputFilePropertyType filePropertyType) {
         for (PropertyVisitor visitor : visitors) {
-            visitor.visitOutputFileProperty(propertyName, optional, contentTracking, value, filePropertyType);
+            visitor.visitOutputFileProperty(propertyName, optional, value, filePropertyType);
         }
     }
 
@@ -83,6 +84,13 @@ public class CompositePropertyVisitor implements PropertyVisitor {
     public void visitLocalStateProperty(Object value) {
         for (PropertyVisitor visitor : visitors) {
             visitor.visitLocalStateProperty(value);
+        }
+    }
+
+    @Override
+    public void visitServiceReference(String propertyName, boolean optional, PropertyValue value, @Nullable String serviceName, Class<? extends BuildService<?>> buildServiceType) {
+        for (PropertyVisitor visitor : visitors) {
+            visitor.visitServiceReference(propertyName, optional, value, serviceName, buildServiceType);
         }
     }
 }

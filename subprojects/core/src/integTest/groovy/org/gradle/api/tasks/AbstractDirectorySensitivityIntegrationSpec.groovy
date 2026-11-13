@@ -17,12 +17,12 @@
 package org.gradle.api.tasks
 
 import org.gradle.integtests.fixtures.AbstractIntegrationSpec
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
 import org.gradle.internal.fingerprint.DirectorySensitivity
-import spock.lang.Unroll
 
 abstract class AbstractDirectorySensitivityIntegrationSpec extends AbstractIntegrationSpec {
 
-    public static final String TRANSFORM_EXECUTED = 'Transform bar.zip (project :bar) with AugmentTransform'
+    public static final String TRANSFORM_EXECUTED = "Transform bar.zip (project ':bar') with AugmentTransform"
 
     abstract void execute(String... tasks)
 
@@ -30,7 +30,6 @@ abstract class AbstractDirectorySensitivityIntegrationSpec extends AbstractInteg
 
     abstract String getStatusForReusedOutput()
 
-    @Unroll
     def "task is sensitive to empty directories by default (#api, #pathSensitivity)"() {
         createTaskWithSensitivity(DirectorySensitivity.DEFAULT, api, pathSensitivity)
         buildFile << """
@@ -69,10 +68,57 @@ abstract class AbstractDirectorySensitivityIntegrationSpec extends AbstractInteg
         executedAndNotSkipped(":taskWithInputs")
 
         where:
-        [api, pathSensitivity] << [Api.values(), [PathSensitivity.RELATIVE, PathSensitivity.ABSOLUTE, PathSensitivity.NAME_ONLY]].combinations()
+        api << Api.values()
+
+        combined:
+        pathSensitivity << [PathSensitivity.RELATIVE, PathSensitivity.ABSOLUTE, PathSensitivity.NAME_ONLY]
     }
 
-    @Unroll
+    def "input directories ignore empty directories by default (#api)"() {
+        buildFile """
+            @CacheableTask
+            abstract class TaskWithInputs extends DefaultTask {
+                ${ api == Api.ANNOTATION_API ? "@InputDirectory @PathSensitive(PathSensitivity.RELATIVE)" : "@Internal" }
+                abstract DirectoryProperty getSources()
+
+                @OutputFile
+                abstract RegularFileProperty getOutputFile()
+
+                @TaskAction
+                void doSomething() {
+                    outputFile.get().asFile.text = "executed"
+                }
+            }
+
+            tasks.register("taskWithInputs", TaskWithInputs) {
+                sources.set(file("inputDir"))
+                outputFile.set(file("build/outputFile.txt"))
+                ${ api == Api.RUNTIME_API
+                    ? "inputs.dir(sources).withPathSensitivity(PathSensitivity.RELATIVE).withPropertyName('sources')"
+                    : "" }
+            }
+        """
+        def inputDir = file("inputDir").createDir()
+        inputDir.createDir("some/empty/sub-directory")
+        inputDir.createFile("some/file.txt")
+
+        when:
+        execute("taskWithInputs")
+        then:
+        executedAndNotSkipped(":taskWithInputs")
+
+        when:
+        cleanWorkspace()
+        inputDir.createDir("some/other/empty/dir")
+        execute("taskWithInputs")
+
+        then:
+        reused(":taskWithInputs")
+
+        where:
+        api << Api.values()
+    }
+
     def "empty directories are ignored when specified (#api, #pathSensitivity)"() {
         createTaskWithSensitivity(DirectorySensitivity.IGNORE_DIRECTORIES, api, pathSensitivity)
         buildFile << """
@@ -111,10 +157,12 @@ abstract class AbstractDirectorySensitivityIntegrationSpec extends AbstractInteg
         reused(":taskWithInputs")
 
         where:
-        [api, pathSensitivity] << [Api.values(), [PathSensitivity.RELATIVE, PathSensitivity.ABSOLUTE, PathSensitivity.NAME_ONLY]].combinations()
+        api << Api.values()
+
+        combined:
+        pathSensitivity << [PathSensitivity.RELATIVE, PathSensitivity.ABSOLUTE, PathSensitivity.NAME_ONLY]
     }
 
-    @Unroll
     def "Non-empty directories are tracked when empty directories are ignored (#api, #pathSensitivity)"() {
         createTaskWithSensitivity(DirectorySensitivity.IGNORE_DIRECTORIES, api, pathSensitivity)
         buildFile << """
@@ -167,10 +215,17 @@ abstract class AbstractDirectorySensitivityIntegrationSpec extends AbstractInteg
         executedAndNotSkipped(":taskWithInputs")
 
         where:
-        [api, pathSensitivity] << [Api.values(), [PathSensitivity.RELATIVE, PathSensitivity.ABSOLUTE, PathSensitivity.NAME_ONLY]].combinations()
+        api << Api.values()
+
+        combined:
+        pathSensitivity << [PathSensitivity.RELATIVE, PathSensitivity.ABSOLUTE, PathSensitivity.NAME_ONLY]
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects, extensive cross-project access")
     def "artifact transforms are sensitive to empty directories by default"() {
+        // Immutable artifact transforms are cached to the GradleUserHome,
+        // so to avoid flakiness we need to request own GradleUserHome
+        executer.requireOwnGradleUserHomeDir()
         createParameterizedTransformWithSensitivity(DirectorySensitivity.DEFAULT)
         file('augmented').mkdir()
         file('augmented/a').mkdir()
@@ -209,7 +264,11 @@ abstract class AbstractDirectorySensitivityIntegrationSpec extends AbstractInteg
         assertTransformExecuted()
     }
 
+    @ToBeFixedForIsolatedProjects(because = "allprojects, extensive cross-project access")
     def "artifact transforms ignore empty directories when specified"() {
+        // Immutable artifact transforms are cached to the GradleUserHome,
+        // so to avoid flakiness we need to request own GradleUserHome
+        executer.requireOwnGradleUserHomeDir()
         createParameterizedTransformWithSensitivity(DirectorySensitivity.IGNORE_DIRECTORIES)
         file('augmented').mkdir()
         file('augmented/a').mkdir()

@@ -19,20 +19,20 @@ package org.gradle.internal.work;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ListMultimap;
-import com.google.common.collect.Lists;
-import com.google.common.collect.Sets;
+import org.gradle.internal.Factories;
 import org.gradle.internal.exceptions.DefaultMultiCauseException;
 import org.gradle.internal.operations.BuildOperationRef;
 import org.gradle.util.internal.CollectionUtils;
 
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class DefaultAsyncWorkTracker implements AsyncWorkTracker {
     private final ListMultimap<BuildOperationRef, AsyncWorkCompletion> items = ArrayListMultimap.create();
-    private final Set<BuildOperationRef> waiting = Sets.newHashSet();
+    private final Set<BuildOperationRef> waiting = new HashSet<>();
     private final ReentrantLock lock = new ReentrantLock();
     private final WorkerLeaseService workerLeaseService;
 
@@ -124,23 +124,25 @@ public class DefaultAsyncWorkTracker implements AsyncWorkTracker {
 
     private void waitForItemsAndGatherFailures(Iterable<AsyncWorkCompletion> workItems) {
         // Release worker lease while waiting
-        workerLeaseService.withoutLocks(Collections.singletonList(workerLeaseService.getCurrentWorkerLease()), () -> {
-            final List<Throwable> failures = Lists.newArrayList();
-            for (AsyncWorkCompletion item : workItems) {
-                try {
-                    item.waitForCompletion();
-                } catch (Throwable t) {
-                    if (Thread.currentThread().isInterrupted()) {
-                        cancel(workItems);
+        workerLeaseService.whileDisallowingProjectLockChanges(Factories.toFactory(() ->
+            workerLeaseService.blocking(() -> {
+                final List<Throwable> failures = new ArrayList<>();
+                for (AsyncWorkCompletion item : workItems) {
+                    try {
+                        item.waitForCompletion();
+                    } catch (Throwable t) {
+                        if (Thread.currentThread().isInterrupted()) {
+                            cancel(workItems);
+                        }
+                        failures.add(t);
                     }
-                    failures.add(t);
                 }
-            }
 
-            if (failures.size() > 0) {
-                throw new DefaultMultiCauseException("There were failures while executing asynchronous work:", failures);
-            }
-        });
+                if (!failures.isEmpty()) {
+                    throw new DefaultMultiCauseException("There were failures while executing asynchronous work:", failures);
+                }
+            })
+        ));
     }
 
     private void cancel(Iterable<AsyncWorkCompletion> workItems) {

@@ -19,7 +19,7 @@ import groovy.lang.Closure;
 import org.gradle.api.Buildable;
 import org.gradle.api.provider.Provider;
 import org.gradle.api.specs.Spec;
-import org.gradle.api.tasks.AntBuilderAware;
+import org.gradle.declarative.dsl.model.annotations.HiddenInDefinition;
 import org.gradle.internal.HasInternalProtocol;
 
 import java.io.File;
@@ -36,14 +36,18 @@ import java.util.Set;
  * property, Gradle will take care of automatically adding dependencies between the consuming task and the producing tasks.</p>
  *
  * <p>You can obtain a {@code FileCollection} instance using {@link org.gradle.api.Project#files}.</p>
+ * @since 0.8
  */
 @HasInternalProtocol
-public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildable {
+@HiddenInDefinition
+@SuppressWarnings("deprecation")
+public interface FileCollection extends Iterable<File>, org.gradle.api.tasks.AntBuilderAware, Buildable {
     /**
      * Returns the content of this collection, asserting it contains exactly one file.
      *
      * @return The file.
      * @throws IllegalStateException when this collection does not contain exactly one file.
+     * @since 0.8
      */
     File getSingleFile() throws IllegalStateException;
 
@@ -56,6 +60,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      * </p>
      *
      * @return The files. Returns an empty set if this collection is empty.
+     * @since 0.8
      */
     Set<File> getFiles();
 
@@ -65,6 +70,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      *
      * @param file The file to check for.
      * @return true if this collection contains the given file, false otherwise.
+     * @since 0.9
      */
     boolean contains(File file);
 
@@ -73,6 +79,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      * &lt;path&gt; element.
      *
      * @return The path. Returns an empty string if this collection is empty.
+     * @since 0.8
      */
     String getAsPath();
 
@@ -84,6 +91,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      *
      * @param collection The other collection. Should not be null.
      * @return A new collection containing the union.
+     * @since 0.8
      */
     FileCollection plus(FileCollection collection);
 
@@ -95,6 +103,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      *
      * @param collection The other collection. Should not be null.
      * @return A new collection containing the difference.
+     * @since 0.9
      */
     FileCollection minus(FileCollection collection);
 
@@ -102,11 +111,12 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      * <p>Restricts the contents of this collection to those files which match the given criteria. The filtered
      * collection is live, so that it reflects any changes to this collection.</p>
      *
-     * <p>The given closure is passed the @{link File} as a parameter, and should return a boolean value. The closure should return {@code true}
+     * <p>The given closure is passed the {@link File} as a parameter, and should return a boolean value. The closure should return {@code true}'
      * to include the file in the result and {@code false} to exclude the file from the result.</p>
      *
      * @param filterClosure The closure to use to select the contents of the filtered collection.
      * @return The filtered collection.
+     * @since 0.9
      */
     FileCollection filter(Closure filterClosure);
 
@@ -116,6 +126,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      *
      * @param filterSpec The criteria to use to select the contents of the filtered collection.
      * @return The filtered collection.
+     * @since 0.9
      */
     FileCollection filter(Spec<? super File> filterSpec);
 
@@ -124,6 +135,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      * getFiles().isEmpty()}.
      *
      * @return true if this collection is empty, false otherwise.
+     * @since 0.9
      */
     boolean isEmpty();
 
@@ -135,6 +147,7 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      * <p>The returned {@link FileTree} is live, and tracks changes to this file collection and the producer tasks of this file collection.</p>
      *
      * @return this collection as a {@link FileTree}. Never returns null.
+     * @since 0.8
      */
     FileTree getAsFileTree();
 
@@ -149,9 +162,23 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
 
     /**
      * Ant types which a {@code FileCollection} can be mapped to.
+     * @since 0.8
+     * @deprecated This type will be removed in Gradle 10.
      */
+    @Deprecated
     enum AntType {
-        MatchingTask, FileSet, ResourceCollection
+        /**
+         * @since 0.8
+         */
+        MatchingTask,
+        /**
+         * @since 0.8
+         */
+        FileSet,
+        /**
+         * @since 0.8
+         */
+        ResourceCollection
     }
 
     /**
@@ -177,13 +204,19 @@ public interface FileCollection extends Iterable<File>, AntBuilderAware, Buildab
      * @param builder The builder to add this collection to.
      * @param nodeName The target node name.
      * @param type The target Ant type
+     * @since 0.8
+     * @deprecated This method will be removed in Gradle 10.
      */
+    @Deprecated
     void addToAntBuilder(Object builder, String nodeName, AntType type);
 
     /**
      * Adds this collection to an Ant task as a nested node. Equivalent to calling {@code addToAntBuilder(builder,
      * nodeName,AntType.ResourceCollection)}.
+     *
+     * @deprecated This method will be removed in Gradle 10.
      */
     @Override
+    @Deprecated
     Object addToAntBuilder(Object builder, String nodeName);
 }

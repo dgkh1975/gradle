@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+import gradlebuild.jvm.JvmCompileExtension
+
 tasks.registerEarlyFeedbackLifecycleTasks()
 tasks.named("quickTest") {
     dependsOn("test")
@@ -22,7 +24,14 @@ tasks.named("platformTest") {
     dependsOn("test")
 }
 tasks.configureCIIntegrationTestDistributionLifecycleTasks()
-tasks.configureCICrossVersionTestDistributionLifecycleTasks()
+
+pluginManager.withPlugin("gradlebuild.jvm-compile") {
+    the<JvmCompileExtension>().whenMultiReleaseTestTaskRegistered {
+        val versionedTest = this
+        tasks.named("quickTest") { dependsOn(versionedTest) }
+        tasks.named("platformTest") { dependsOn(versionedTest) }
+    }
+}
 
 val ciGroup = "CI Lifecycle"
 
@@ -39,7 +48,7 @@ fun TaskContainer.registerEarlyFeedbackLifecycleTasks() {
     register("sanityCheck") {
         description = "Run all basic checks (without tests) - to be run locally and on CI for early feedback"
         group = "verification"
-        dependsOn("compileAll", "codeQuality")
+        dependsOn("compileAll", "codeQuality", "projectHealth")
     }
 }
 
@@ -70,23 +79,5 @@ fun TaskContainer.configureCIIntegrationTestDistributionLifecycleTasks() {
 
     named("forceRealizeDependencyManagementTest") {
         dependsOn("integForceRealizeTest")
-    }
-}
-
-fun TaskContainer.configureCICrossVersionTestDistributionLifecycleTasks() {
-    named("quickTest") {
-        dependsOn("embeddedCrossVersionTest")
-    }
-
-    named("platformTest") {
-        dependsOn("forkingCrossVersionTest")
-    }
-
-    named("quickFeedbackCrossVersionTest") {
-        dependsOn("quickFeedbackCrossVersionTests")
-    }
-
-    named("allVersionsCrossVersionTest") {
-        dependsOn("allVersionsCrossVersionTests")
     }
 }

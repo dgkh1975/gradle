@@ -30,13 +30,17 @@ import java.lang.annotation.Target;
  * resulting snapshot.
  *
  * <p>This annotation should be attached to the getter method in Java or the property in Groovy.
+ * In Kotlin, use the {@code get:} use-site target to attach it to the property getter, for example {@code @get:IgnoreEmptyDirectories}.
+ * This also works on abstract properties, where the annotation without a use-site target does not compile.
  * Annotations on setters or just the field in Java are ignored.</p>
  *
- * This annotation can be applied to the following input property types:
+ * <p>This annotation can be used with the following annotations:</p>
  *
  * <ul><li>{@link org.gradle.api.tasks.InputFiles}</li>
  *
  * <li>{@link org.gradle.api.tasks.InputDirectory}</li>
+ *
+ * <li>{@link org.gradle.api.tasks.SkipWhenEmpty}</li>
  *
  * <li>{@link org.gradle.api.artifacts.transform.InputArtifact}</li>
  *

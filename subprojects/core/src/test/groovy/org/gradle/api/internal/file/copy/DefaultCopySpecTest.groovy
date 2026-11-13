@@ -23,7 +23,10 @@ import org.gradle.api.InvalidUserDataException
 import org.gradle.api.Transformer
 import org.gradle.api.file.CopySpec
 import org.gradle.api.file.DuplicatesStrategy
+import org.gradle.api.file.UserClassFilePermissions
+import org.gradle.api.file.FilePermissions
 import org.gradle.api.file.RelativePath
+import org.gradle.api.internal.file.DefaultConfigurableFilePermissions
 import org.gradle.api.internal.file.TestFiles
 import org.gradle.api.internal.file.pattern.PatternMatcher
 import org.gradle.internal.Actions
@@ -31,16 +34,16 @@ import org.gradle.test.fixtures.file.TestNameTestDirectoryProvider
 import org.gradle.util.TestUtil
 import org.junit.Rule
 import spock.lang.Specification
-import spock.lang.Unroll
 
 import java.nio.charset.Charset
 
 class DefaultCopySpecTest extends Specification {
     @Rule
-    public TestNameTestDirectoryProvider testDir = new TestNameTestDirectoryProvider(getClass());
+    public TestNameTestDirectoryProvider testDir = new TestNameTestDirectoryProvider(getClass())
     private fileCollectionFactory = TestFiles.fileCollectionFactory(testDir.testDirectory)
+    private propertyFactory = TestUtil.propertyFactory()
     private instantiator = TestUtil.instantiatorFactory().decorateLenient()
-    private final DefaultCopySpec spec = new DefaultCopySpec(fileCollectionFactory, instantiator, TestFiles.patternSetFactory)
+    private final DefaultCopySpec spec = new DefaultCopySpec(fileCollectionFactory, propertyFactory, instantiator, TestFiles.patternSetFactory)
 
     private List<String> getTestSourceFileNames() {
         ['first', 'second']
@@ -381,45 +384,60 @@ class DefaultCopySpecTest extends Specification {
         spec.caseSensitive
         spec.includeEmptyDirs
         spec.duplicatesStrategy == DuplicatesStrategy.INCLUDE
-        spec.fileMode == null
-        spec.dirMode == null
+        !spec.filePermissions.isPresent()
+        !spec.dirPermissions.isPresent()
         spec.filteringCharset == Charset.defaultCharset().name()
+    }
 
+    def 'file permissions can be set via #method'(String method, Closure setter) {
         when:
         spec.caseSensitive = false
         spec.includeEmptyDirs = false
         spec.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        spec.fileMode = 1
-        spec.dirMode = 2
+        setter.call(spec)
         spec.filteringCharset = 'UTF8'
 
         then:
         !spec.caseSensitive
         !spec.includeEmptyDirs
         spec.duplicatesStrategy == DuplicatesStrategy.EXCLUDE
-        spec.fileMode == 1
-        spec.dirMode == 2
+        toPermissionString(spec.filePermissions.get()) == "r--r--r--"
+        toPermissionString(spec.dirPermissions.get()) == "rw-r-xr-x"
         spec.filteringCharset == 'UTF8'
+
+        where:
+        method             | setter
+        "property"              | { DefaultCopySpec spec ->
+            spec.filePermissions.value(new DefaultConfigurableFilePermissions(0444))
+            spec.dirPermissions.value(new DefaultConfigurableFilePermissions(0655))
+        }
+        "configuration block"   | { DefaultCopySpec spec ->
+            spec.filePermissions {
+                it.user.write = false
+            }
+            spec.dirPermissions {
+                it.user.execute = false
+            }
+        }
     }
 
-    @Unroll
     def 'properties accessed directly on specs created using #method inherit from parents'() {
         when: //set non defaults on root
         spec.caseSensitive = false
         spec.includeEmptyDirs = false
         spec.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-        spec.fileMode = 1
-        spec.dirMode = 2
+        spec.filePermissions { it.unix(1) }
+        spec.dirPermissions { it.unix(2) }
         spec.filteringCharset = "ISO_8859_1"
 
         DefaultCopySpec child = unpackWrapper(spec."${method}"("child") {})
 
         then: //children still have these non defaults
-        !child.caseSensitive;
-        !child.includeEmptyDirs;
+        !child.caseSensitive
+        !child.includeEmptyDirs
         child.duplicatesStrategy == DuplicatesStrategy.EXCLUDE
-        child.fileMode == 1
-        child.dirMode == 2
+        child.filePermissions.get().toUnixNumeric() == 1
+        child.dirPermissions.get().toUnixNumeric() == 2
         child.filteringCharset == "ISO_8859_1"
 
         where:
@@ -443,7 +461,7 @@ class DefaultCopySpecTest extends Specification {
     }
 
     def 'can add spec hierarchy as child'() {
-        CopySpec otherSpec = new DefaultCopySpec(fileCollectionFactory, instantiator, TestFiles.patternSetFactory)
+        CopySpec otherSpec = new DefaultCopySpec(fileCollectionFactory, propertyFactory, instantiator, TestFiles.patternSetFactory)
         otherSpec.addChild()
         def added = []
 
@@ -483,4 +501,19 @@ class DefaultCopySpecTest extends Specification {
     private static RelativePath relativeFile(String segments) {
         RelativePath.parse(true, segments)
     }
+
+    static String toPermissionString(FilePermissions permissions) {
+        def user = toPermissionString(permissions.user)
+        def group = toPermissionString(permissions.group)
+        def other = toPermissionString(permissions.other)
+        return user + group  + other
+    }
+
+    static String toPermissionString(UserClassFilePermissions permission) {
+        def read = permission.read ? "r" : "-"
+        def write = permission.write ? "w" : "-"
+        def execute = permission.execute ? "x" : "-"
+        return read + write + execute
+    }
+
 }

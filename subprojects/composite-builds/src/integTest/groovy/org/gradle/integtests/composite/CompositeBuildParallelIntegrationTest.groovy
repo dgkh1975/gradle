@@ -17,17 +17,16 @@
 package org.gradle.integtests.composite
 
 import org.gradle.api.internal.tasks.execution.ExecuteTaskBuildOperationType
-import org.gradle.integtests.fixtures.executer.GradleContextualExecuter
 import org.gradle.test.fixtures.server.http.BlockingHttpServer
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 import org.junit.Rule
-import spock.lang.IgnoreIf
-import spock.lang.Unroll
+import org.gradle.integtests.fixtures.modes.ToBeFixedForIsolatedProjects
 
-@IgnoreIf({ GradleContextualExecuter.isParallel() })
+@Requires(TestExecutionPreconditions.NotParallelExecutor)
 class CompositeBuildParallelIntegrationTest extends AbstractCompositeBuildIntegrationTest {
     @Rule BlockingHttpServer server = new BlockingHttpServer()
 
-    @Unroll
     def "works when number of included builds exceeds max-workers --max-workers=#maxWorkers"() {
         def totalIncludedBuilds = 5*maxWorkers
         buildA.buildFile << """
@@ -96,6 +95,7 @@ class CompositeBuildParallelIntegrationTest extends AbstractCompositeBuildIntegr
         execute(buildA, "jar", "--max-workers=4")
     }
 
+    @ToBeFixedForIsolatedProjects(because = "cross-build configuration in composite build")
     def "constructs included build artifacts in parallel with multi-project included build"() {
         given:
         def maxWorkers = 4

@@ -18,10 +18,8 @@ package org.gradle.api.internal.tasks.properties;
 
 import groovy.lang.GString;
 import org.gradle.api.Task;
-import org.gradle.api.file.FileCollection;
 import org.gradle.util.internal.DeferredUtil;
-
-import javax.annotation.Nullable;
+import org.jspecify.annotations.Nullable;
 
 public class InputParameterUtils {
     @Nullable
@@ -44,9 +42,6 @@ public class InputParameterUtils {
     private static Object finalizeValue(@Nullable Object unpacked) {
         if (unpacked instanceof GString) {
             return unpacked.toString();
-        }
-        if (unpacked instanceof FileCollection) {
-            return ((FileCollection) unpacked).getFiles();
         }
         return unpacked;
     }

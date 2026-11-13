@@ -19,7 +19,7 @@
  *
  * @since 6.1
  */
-@Incubating
+@NullMarked
 package org.gradle.api.services;
 
-import org.gradle.api.Incubating;
+import org.jspecify.annotations.NullMarked;

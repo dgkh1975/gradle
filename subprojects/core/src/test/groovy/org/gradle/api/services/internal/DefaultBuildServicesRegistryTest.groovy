@@ -20,22 +20,71 @@ import org.gradle.BuildListener
 import org.gradle.BuildResult
 import org.gradle.api.Action
 import org.gradle.api.GradleException
-import org.gradle.api.artifacts.component.BuildIdentifier
+import org.gradle.api.internal.collections.DomainObjectCollectionFactory
+import org.gradle.api.model.ObjectFactory
+import org.gradle.api.provider.Property
 import org.gradle.api.services.BuildService
 import org.gradle.api.services.BuildServiceParameters
+import org.gradle.api.services.BuildServiceRegistry
+import org.gradle.api.services.BuildServiceSpec
+import org.gradle.api.services.ServiceReference
+import org.gradle.internal.build.BuildIdentity
+import org.gradle.internal.Actions
+import org.gradle.internal.Try
+import org.gradle.internal.buildtree.BuildModelParameters
+import org.gradle.internal.configuration.problems.DefaultIsolatedProjectsProblemsReporter
+import org.gradle.internal.configuration.problems.IsolatedProjectsProblemsListener
+import org.gradle.internal.configuration.problems.ProblemFactory
 import org.gradle.internal.event.DefaultListenerManager
+import org.gradle.internal.hash.ClassLoaderHierarchyHasher
+import org.gradle.internal.hash.TestHashCodes
+import org.gradle.internal.instantiation.InstantiatorFactory
+import org.gradle.internal.operations.TestBuildOperationRunner
 import org.gradle.internal.resources.SharedResourceLeaseRegistry
-import org.gradle.internal.service.scopes.Scopes
-import org.gradle.internal.snapshot.impl.DefaultValueSnapshotter
+import org.gradle.internal.service.Provides
+import org.gradle.internal.service.ServiceRegistrationProvider
+import org.gradle.internal.service.scopes.Scope
+import org.gradle.internal.snapshot.impl.DefaultIsolatableFactory
 import org.gradle.util.TestUtil
+import org.gradle.util.Path
 import spock.lang.Specification
 
+import java.util.function.Consumer
+
 class DefaultBuildServicesRegistryTest extends Specification {
-    def listenerManager = new DefaultListenerManager(Scopes.Build)
-    def isolatableFactory = new DefaultValueSnapshotter(null, TestUtil.managedFactoryRegistry())
+    def listenerManager = new DefaultListenerManager(Scope.Build)
+    def classLoaderHasher = Stub(ClassLoaderHierarchyHasher) {
+        getClassLoaderHash(_) >> TestHashCodes.hashCodeFrom(123)
+    }
+    def isolatableFactory = new DefaultIsolatableFactory(classLoaderHasher, TestUtil.managedFactoryRegistry())
     def leaseRegistry = Stub(SharedResourceLeaseRegistry)
-    def buildIdentifier = Mock(BuildIdentifier)
-    def registry = new DefaultBuildServicesRegistry(buildIdentifier, TestUtil.domainObjectCollectionFactory(), TestUtil.instantiatorFactory(), TestUtil.services(), listenerManager, isolatableFactory, leaseRegistry)
+    def buildIdentity = new BuildIdentity(Path.ROOT)
+    def ipProblemsReporter = new DefaultIsolatedProjectsProblemsReporter(
+        Stub(ProblemFactory),
+        Stub(IsolatedProjectsProblemsListener)
+    )
+    def buildModelParameters = Stub(BuildModelParameters)
+    def services = TestUtil.createTestServices { registrations ->
+        registrations.addProvider(new ServiceRegistrationProvider() {
+            @Provides
+            BuildServiceRegistry createBuildServiceRegistry() {
+                return new DefaultBuildServicesRegistry(
+                    buildIdentity,
+                    services.get(DomainObjectCollectionFactory),
+                    services.get(InstantiatorFactory),
+                    services,
+                    listenerManager,
+                    isolatableFactory,
+                    leaseRegistry,
+                    BuildServiceProvider.Listener.EMPTY,
+                    ipProblemsReporter,
+                    buildModelParameters,
+                    new TestBuildOperationRunner()
+                )
+            }
+        })
+    }
+    def registry = services.get(BuildServiceRegistry)
 
     def setup() {
         ServiceImpl.reset()
@@ -43,7 +92,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "can lazily create service instance"() {
         when:
-        def provider = registry.registerIfAbsent("service", ServiceImpl) {}
+        def provider = registerService("service", ServiceImpl)
 
         then:
         ServiceImpl.instances.empty
@@ -65,7 +114,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "service provider always has value present"() {
         when:
-        def provider = registry.registerIfAbsent("service", ServiceImpl) {}
+        def provider = registerService("service", ServiceImpl)
 
         then:
         provider.present
@@ -74,7 +123,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "wraps and memoizes service instantiation failure"() {
         when:
-        def provider = registry.registerIfAbsent("service", BrokenServiceImpl) {}
+        def provider = registerService("service", BrokenServiceImpl)
 
         then:
         noExceptionThrown()
@@ -98,17 +147,19 @@ class DefaultBuildServicesRegistryTest extends Specification {
     }
 
     def "service has no max parallel usages by default"() {
-        expect:
-        registry.registerIfAbsent("service", ServiceImpl) {
+        given:
+        registerService("service", ServiceImpl) {
             assert !it.maxParallelUsages.present
         }
+
+        expect:
         def registration = registry.registrations.getByName("service")
         !registration.maxParallelUsages.present
     }
 
     def "can locate registration by name"() {
         when:
-        def provider = registry.registerIfAbsent("service", ServiceImpl) {}
+        def provider = registerService("service", ServiceImpl)
         def registration = registry.registrations.getByName("service")
 
         then:
@@ -118,8 +169,8 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "reuses registration with same name"() {
         when:
-        def provider1 = registry.registerIfAbsent("service", ServiceImpl) {}
-        def provider2 = registry.registerIfAbsent("service", ServiceImpl) {}
+        def provider1 = registerService("service", ServiceImpl)
+        def provider2 = registerService("service", ServiceImpl)
 
         then:
         provider1.is(provider2)
@@ -127,7 +178,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "can provide parameters to the service"() {
         when:
-        def provider = registry.registerIfAbsent("service", ServiceImpl) {
+        def provider = registerService("service", ServiceImpl) {
             it.parameters.prop = "value"
         }
         def service = provider.get()
@@ -137,10 +188,11 @@ class DefaultBuildServicesRegistryTest extends Specification {
     }
 
     def "service can take no parameters"() {
+        given:
         def action = Mock(Action)
 
         when:
-        def provider = registry.registerIfAbsent("service", NoParamsServiceImpl, action)
+        def provider = registerService("service", NoParamsServiceImpl, action)
 
         then:
         1 * action.execute(_)
@@ -152,10 +204,19 @@ class DefaultBuildServicesRegistryTest extends Specification {
         service != null
     }
 
+    def "service can be create without action"() {
+        when:
+        def provider = registerService("service", NoParamsServiceImpl)
+        def service = provider.get()
+
+        then:
+        service != null
+    }
+
     def "can tweak parameters via the registration"() {
         when:
         def initialParameters
-        def provider = registry.registerIfAbsent("service", ServiceImpl) {
+        def provider = registerService("service", ServiceImpl) {
             it.parameters.prop = "value 1"
             initialParameters = it.parameters
         }
@@ -175,7 +236,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "can tweak max parallel usage via the registration"() {
         when:
-        registry.registerIfAbsent("service", BuildService) {
+        registerService("service", NoParamsServiceImpl) {
             it.maxParallelUsages = 42
         }
         def registration = registry.registrations.getByName("service")
@@ -186,7 +247,15 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "registration for service with no parameters is visible"() {
         when:
-        registry.registerIfAbsent("service", NoParamsServiceImpl) {}
+        registerService("service", NoParamsServiceImpl)
+
+        then:
+        registry.registrations.getByName("service") != null
+    }
+
+    def "registration for service with no action is visible"() {
+        when:
+        registerService("service", NoParamsServiceImpl)
 
         then:
         registry.registrations.getByName("service") != null
@@ -194,7 +263,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "can use base service type to create a service with no state"() {
         when:
-        def provider = registry.registerIfAbsent("service", BuildService) {}
+        def provider = registerService("service", NoParamsServiceImpl)
         def service = provider.get()
 
         then:
@@ -203,7 +272,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "registration for service with no state is visible"() {
         when:
-        registry.registerIfAbsent("service", BuildService) {}
+        registerService("service", NoParamsServiceImpl)
 
         then:
         registry.registrations.getByName("service") != null
@@ -211,7 +280,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "parameters are isolated when the service is instantiated"() {
         given:
-        def provider = registry.registerIfAbsent("service", ServiceImpl) {
+        def provider = registerService("service", ServiceImpl) {
             it.parameters.prop = "value 1"
         }
         def parameters = registry.registrations.getByName("service").parameters
@@ -231,9 +300,10 @@ class DefaultBuildServicesRegistryTest extends Specification {
     }
 
     def "stops service at end of build if it implements AutoCloseable"() {
-        def provider1 = registry.registerIfAbsent("one", ServiceImpl) {}
-        def provider2 = registry.registerIfAbsent("two", StoppableServiceImpl) {}
-        def provider3 = registry.registerIfAbsent("three", StoppableServiceImpl) {}
+        given:
+        def provider1 = registerService("one", ServiceImpl)
+        def provider2 = registerService("two", StoppableServiceImpl)
+        def provider3 = registerService("three", StoppableServiceImpl)
 
         when:
         def notStoppable = provider1.get()
@@ -251,7 +321,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
     }
 
     def "does not attempt to stop an unused service at the end of build"() {
-        registry.registerIfAbsent("service", ServiceImpl) {}
+        registerService("service", ServiceImpl)
 
         when:
         buildFinished()
@@ -261,7 +331,8 @@ class DefaultBuildServicesRegistryTest extends Specification {
     }
 
     def "reports failure to stop service"() {
-        def provider = registry.registerIfAbsent("service", BrokenStopServiceImpl) {}
+        given:
+        def provider = registerService("service", BrokenStopServiceImpl)
         provider.get()
 
         when:
@@ -275,10 +346,10 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "can locate resource corresponding to service registration"() {
         when:
-        def service1 = registry.registerIfAbsent("service", BuildService) {
+        def service1 = registerService("service", NoParamsServiceImpl) {
             it.maxParallelUsages = 42
         }
-        def service2 = registry.registerIfAbsent("no-max", ServiceImpl) {}
+        def service2 = registerService("no-max", ServiceImpl)
 
         then:
         registry.forService(service1).maxUsages == 42
@@ -287,7 +358,7 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
     def "cannot change max parallel usages once resource has been located"() {
         given:
-        def service = registry.registerIfAbsent("service", ServiceImpl) {}
+        def service = registerService("service", ServiceImpl)
         def registration = registry.registrations.findByName("service")
         registration.maxParallelUsages = 42
         registry.forService(service)
@@ -301,6 +372,170 @@ class DefaultBuildServicesRegistryTest extends Specification {
 
         and:
         registry.forService(service).maxUsages == 42
+    }
+
+    def "applies built-in convention to service references"() {
+        given:
+        def bean = services.get(ObjectFactory).newInstance(BeanWithBuildServiceProperty)
+
+        expect:
+        bean.getHello().getOrNull() == null
+
+        when:
+        registerService("helloService", NoParamsServiceImpl)
+
+        then:
+        bean.getHello().getOrNull() != null
+    }
+
+    def "stop action is called when the service is not created"() {
+        given:
+        Consumer<Object> stopAction = Mock()
+        def provider = registerService("service", ServiceImpl)
+        provider.beforeStopping(stopAction)
+
+        when:
+        buildFinished()
+
+        then:
+        1 * stopAction.accept(provider)
+    }
+
+    def "service may be created by the stop action"() {
+        given:
+        def provider = registerService("service", ServiceImpl)
+        provider.beforeStopping { provider.get() }
+
+        when:
+        buildFinished()
+
+        then:
+        ServiceImpl.instances.size() == 1
+    }
+
+    def "service created by the stop action is stopped"() {
+        given:
+        def provider = registerService("service", StoppableServiceImpl)
+        provider.beforeStopping { provider.get() }
+
+        when:
+        buildFinished()
+
+        then:
+        ServiceImpl.instances.isEmpty()
+    }
+
+    def "an exception from stop action is rethrown"() {
+        given:
+        def provider = registerService("service", ServiceImpl)
+        provider.beforeStopping { throw new UnsupportedOperationException("Don't stop") }
+        when:
+        buildFinished()
+
+        then:
+        thrown(Exception)
+    }
+
+    def "other stop actions run if one of them throws"() {
+        given:
+        def provider = registerService("service", ServiceImpl)
+        Consumer<Object> otherAction = Mock()
+        provider.beforeStopping { throw new UnsupportedOperationException("Don't stop") }
+        provider.beforeStopping(otherAction)
+
+        when:
+        buildFinished()
+
+        then:
+        thrown(Exception)
+        1 * otherAction.accept(provider)
+    }
+
+    def "service is still stopped if stop action throws exception"() {
+        given:
+        def provider = registerService("service", StoppableServiceImpl)
+        provider.beforeStopping { throw new UnsupportedOperationException("Don't stop") }
+        provider.get()
+
+        when:
+        buildFinished()
+
+        then:
+        thrown(Exception)
+        StoppableServiceImpl.instances.isEmpty()
+    }
+
+    def "stop actions run if server stop method throws"() {
+        given:
+        def provider = registerService("service", BrokenStopServiceImpl)
+        Consumer<Object> action = Mock()
+        provider.beforeStopping(action)
+        provider.get()
+
+        when:
+        buildFinished()
+
+        then:
+        thrown(ServiceLifecycleException)
+        1 * action.accept(provider)
+    }
+
+    def "exceptions from stop actions are suppressed if stop method throws"() {
+        given:
+        def provider = registerService("service", BrokenStopServiceImpl)
+        provider.beforeStopping { throw new UnsupportedOperationException("Don't stop") }
+        provider.get()
+
+        when:
+        buildFinished()
+
+        then:
+        def e = thrown(ServiceLifecycleException)
+        e.suppressed != null && e.suppressed.length > 0
+    }
+
+    def "exception from stop action does not prevent other services from stopping"() {
+        given:
+        def providerA = registerService("A", StoppableServiceImpl)
+        def providerB = registerService("B", StoppableServiceImpl)
+        Consumer<Object> actionB = Mock()
+
+        providerA.beforeStopping { throw new UnsupportedOperationException("Don't stop") }
+        providerB.beforeStopping(actionB)
+
+        providerA.get()
+        providerB.get()
+
+        when:
+        buildFinished()
+
+        then:
+        thrown(Exception)
+        StoppableServiceImpl.instances.isEmpty()
+        1 * actionB.accept(providerB)
+    }
+
+    def "stop action runs for service that failed to start"() {
+        given:
+        def provider = registerService("failed", BrokenServiceImpl)
+        Consumer<Object> action = Mock()
+        provider.beforeStopping(action)
+
+        Try.ofFailable { provider.get() }
+
+        when:
+        buildFinished()
+
+        then:
+        1 * action.accept(provider)
+    }
+
+    private <P extends BuildServiceParameters, T extends BuildService<P>> RegisteredBuildServiceProvider<T, P> registerService(
+        String name,
+        Class<T> implClass,
+        Action<BuildServiceSpec<P>> configuration = Actions.doNothing()
+    ) {
+        return registry.registerIfAbsent(name, implClass, configuration) as RegisteredBuildServiceProvider<T, P>
     }
 
     private buildFinished() {
@@ -359,5 +594,10 @@ class DefaultBuildServicesRegistryTest extends Specification {
             attempts++
             throw failure
         }
+    }
+
+    static abstract class BeanWithBuildServiceProperty {
+        @ServiceReference("helloService")
+        abstract Property<NoParamsServiceImpl> getHello();
     }
 }

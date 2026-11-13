@@ -17,122 +17,178 @@
 package org.gradle.internal.buildtree;
 
 import org.gradle.api.internal.GradleInternal;
-import org.gradle.api.internal.project.ProjectInternal;
 import org.gradle.api.internal.project.ProjectState;
-import org.gradle.internal.UncheckedException;
-import org.gradle.internal.build.BuildLifecycleController;
 import org.gradle.internal.build.BuildState;
-import org.gradle.internal.build.BuildToolingModelAction;
+import org.gradle.internal.build.BuildStateRegistry;
 import org.gradle.internal.build.BuildToolingModelController;
-import org.gradle.internal.operations.BuildOperationExecutor;
-import org.gradle.internal.operations.RunnableBuildOperation;
-import org.gradle.internal.resources.ProjectLeaseRegistry;
+import org.gradle.internal.operations.BuildOperationContext;
+import org.gradle.internal.operations.BuildOperationDescriptor;
+import org.gradle.internal.operations.BuildOperationRunner;
+import org.gradle.internal.operations.CallableBuildOperation;
 import org.gradle.tooling.provider.model.UnknownModelException;
-import org.gradle.tooling.provider.model.internal.ToolingModelBuilderLookup;
+import org.gradle.tooling.provider.model.internal.ToolingModelBuilderResultInternal;
+import org.gradle.tooling.provider.model.internal.ToolingModelParameterCarrier;
+import org.gradle.tooling.provider.model.internal.ToolingModelScope;
+import org.gradle.tooling.provider.model.internal.ToolingModelScopeResult;
+import org.jspecify.annotations.Nullable;
 
-import java.util.Collection;
+import java.io.File;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Supplier;
 
 public class DefaultBuildTreeModelCreator implements BuildTreeModelCreator {
-    private final BuildLifecycleController buildController;
-    private final BuildOperationExecutor buildOperationExecutor;
-    private final ProjectLeaseRegistry projectLeaseRegistry;
-    private final boolean parallelActions;
-    // Apply some locking around configuration and tooling model lookup. This should move deeper into the build tree and build state controllers
-    private final Object treeMutableStateLock = new Object();
+    private final BuildState defaultTarget;
+    private final IntermediateBuildActionRunner actionRunner;
+    private final ToolingModelParameterCarrier.Factory parameterCarrierFactory;
+    private final BuildStateRegistry buildStateRegistry;
+    private final BuildOperationRunner buildOperationRunner;
 
     public DefaultBuildTreeModelCreator(
-        BuildModelParameters buildModelParameters,
-        BuildLifecycleController buildLifecycleController,
-        BuildOperationExecutor buildOperationExecutor,
-        ProjectLeaseRegistry projectLeaseRegistry
+        BuildState defaultTarget,
+        IntermediateBuildActionRunner actionRunner,
+        ToolingModelParameterCarrier.Factory parameterCarrierFactory,
+        BuildStateRegistry buildStateRegistry,
+        BuildOperationRunner buildOperationRunner
     ) {
-        this.buildController = buildLifecycleController;
-        this.buildOperationExecutor = buildOperationExecutor;
-        this.projectLeaseRegistry = projectLeaseRegistry;
-        this.parallelActions = buildModelParameters.isParallelToolingApiActions();
+        this.defaultTarget = defaultTarget;
+        this.actionRunner = actionRunner;
+        this.parameterCarrierFactory = parameterCarrierFactory;
+        this.buildStateRegistry = buildStateRegistry;
+        this.buildOperationRunner = buildOperationRunner;
     }
 
     @Override
-    public <T> void beforeTasks(BuildToolingModelAction<? extends T> action) {
-        action.beforeTasks(new DefaultBuildToolingModelController());
+    public BuildTreeModelCreatorResult<Void> beforeTasks(BuildTreeModelAction<?> action) {
+        ResilientBuildTreeFailureCollector failures = new ResilientBuildTreeFailureCollector();
+        action.beforeTasks(new DefaultBuildTreeModelController(failures));
+        return BuildTreeModelCreatorResult.of(null, failures);
     }
 
     @Override
-    public <T> T fromBuildModel(BuildToolingModelAction<? extends T> action) {
-        return action.fromBuildModel(new DefaultBuildToolingModelController());
+    public <T> BuildTreeModelCreatorResult<T> fromBuildModel(BuildTreeModelAction<? extends T> action) {
+        ResilientBuildTreeFailureCollector failures = new ResilientBuildTreeFailureCollector();
+        T model = action.fromBuildModel(new DefaultBuildTreeModelController(failures));
+        return BuildTreeModelCreatorResult.of(model, failures);
     }
 
-    private class DefaultBuildToolingModelController implements BuildToolingModelController {
+    private class DefaultBuildTreeModelController implements BuildTreeModelController {
+        private final ResilientBuildTreeFailureCollector buildTreeFailureCollector;
+
+        public DefaultBuildTreeModelController(ResilientBuildTreeFailureCollector buildTreeFailureCollector) {
+            this.buildTreeFailureCollector = buildTreeFailureCollector;
+        }
+
         @Override
         public GradleInternal getConfiguredModel() {
-            return buildController.getConfiguredBuild();
+            return defaultTarget.withToolingModels(false, BuildToolingModelController::getConfiguredModel);
         }
 
         @Override
-        public ToolingModelBuilderLookup.Builder locateBuilderForDefaultTarget(String modelName, boolean param) {
-            synchronized (treeMutableStateLock) {
-                // Look for a build scoped builder
-                ToolingModelBuilderLookup lookup = buildController.getGradle().getServices().get(ToolingModelBuilderLookup.class);
-                ToolingModelBuilderLookup.Builder builder = lookup.maybeLocateForBuildScope(modelName, param, buildController.getGradle().getOwner());
-                if (builder != null) {
-                    return builder;
+        public ToolingModelBuilderResultInternal getModel(BuildTreeModelTarget target, ToolingModelRequestContext modelRequestContext) throws UnknownModelException {
+            // Include target resolution in the operation to identify all work (including build configuration)
+            // that is executed to provide the requested model
+            return buildOperationRunner.call(new CallableBuildOperation<ToolingModelBuilderResultInternal>() {
+                @Override
+                @Nullable
+                public ToolingModelBuilderResultInternal call(BuildOperationContext context) {
+                    ToolingModelScope scope = locateBuilderForTarget(target, modelRequestContext);
+                    ToolingModelParameterCarrier parameter = modelRequestContext.getParameter()
+                        .map(parameterCarrierFactory::createCarrier)
+                        .orElse(null);
+                    ToolingModelScopeResult result = scope.getModel(modelRequestContext, parameter);
+                    // A failure held behind a partial result is collected here, at the build-tree model boundary, so
+                    // the build still fails when it finishes, while the client result is returned unchanged.
+                    buildTreeFailureCollector.collectFrom(result);
+                    return result.getClientResult();
                 }
 
-                // Locate a project scoped model using default project
-                return locateBuilderForTarget(buildController.getGradle().getOwner(), modelName, param);
-            }
-        }
-
-        @Override
-        public ToolingModelBuilderLookup.Builder locateBuilderForTarget(BuildState target, String modelName, boolean param) throws UnknownModelException {
-            synchronized (treeMutableStateLock) {
-                // Force configuration of the build and locate builder for default project
-                buildController.getGradle().getOwner().ensureProjectsConfigured();
-                target.ensureProjectsConfigured();
-            }
-            ProjectInternal targetProject = target.getMutableModel().getDefaultProject();
-            return doLocate(targetProject.getOwner(), modelName, param);
-        }
-
-        @Override
-        public ToolingModelBuilderLookup.Builder locateBuilderForTarget(ProjectState target, String modelName, boolean param) throws UnknownModelException {
-            synchronized (treeMutableStateLock) {
-                // Force configuration of the containing build and then locate the builder for target project
-                buildController.getGradle().getOwner().ensureProjectsConfigured();
-                target.getOwner().ensureProjectsConfigured();
-            }
-            return doLocate(target, modelName, param);
-        }
-
-        private ToolingModelBuilderLookup.Builder doLocate(ProjectState target, String modelName, boolean param) {
-            // Force configuration of the target project to ensure all builders have been registered
-            target.ensureConfigured();
-            ToolingModelBuilderLookup lookup = target.getMutableModel().getServices().get(ToolingModelBuilderLookup.class);
-            return lookup.locateForClientOperation(modelName, param, target);
+                @Override
+                public BuildOperationDescriptor.Builder description() {
+                    String targetDescription = target.describeTargetScope();
+                    String modelName = modelRequestContext.getModelName();
+                    return BuildOperationDescriptor.displayName("Fetch model '" + modelName + "' for " + targetDescription)
+                        .progressDisplayName("Fetching model '" + modelName + "' for " + targetDescription);
+                }
+            });
         }
 
         @Override
         public boolean queryModelActionsRunInParallel() {
-            return projectLeaseRegistry.getAllowsParallelExecution() && parallelActions;
+            return actionRunner.isParallel();
         }
 
         @Override
-        public void runQueryModelActions(Collection<? extends RunnableBuildOperation> actions) {
-            if (queryModelActionsRunInParallel()) {
-                buildOperationExecutor.runAllWithAccessToProjectState(buildOperationQueue -> {
-                    for (RunnableBuildOperation action : actions) {
-                        buildOperationQueue.add(action);
-                    }
-                });
-            } else {
-                for (RunnableBuildOperation action : actions) {
-                    try {
-                        action.run(null);
-                    } catch (Exception e) {
-                        throw UncheckedException.throwAsUncheckedException(e);
-                    }
+        @Nullable
+        public <T> List<T> runQueryModelActions(List<Supplier<T>> actions) {
+            return buildOperationRunner.call(new CallableBuildOperation<List<T>>() {
+                @Override
+                public List<T> call(BuildOperationContext context) {
+                    return actionRunner.run(actions);
                 }
+
+                @Override
+                public BuildOperationDescriptor.Builder description() {
+                    return BuildOperationDescriptor.displayName(String.format("Run nested tooling build actions (%d)", actions.size()));
+                }
+            });
+        }
+
+        private ToolingModelScope locateBuilderForTarget(BuildTreeModelTarget target, ToolingModelRequestContext toolingModelContext) {
+            if (target instanceof BuildTreeModelTarget.Default) {
+                return locateBuilderForDefaultTarget(toolingModelContext);
+            } else if (target instanceof BuildTreeModelTarget.Build) {
+                return locateBuilderForBuildTarget((BuildTreeModelTarget.Build) target, toolingModelContext);
+            } else if (target instanceof BuildTreeModelTarget.Project) {
+                return locateBuilderForProjectTarget((BuildTreeModelTarget.Project) target, toolingModelContext);
+            } else {
+                throw new IllegalStateException("Unknown target: " + target);
             }
+        }
+
+        private ToolingModelScope locateBuilderForDefaultTarget(ToolingModelRequestContext toolingModelContext) {
+            return locateBuilderForBuildTarget(defaultTarget, toolingModelContext);
+        }
+
+        private ToolingModelScope locateBuilderForProjectTarget(BuildTreeModelTarget.Project projectTarget, ToolingModelRequestContext toolingModelContext) {
+            BuildState build = findBuild(projectTarget.getBuildRootDir());
+            ProjectState project = findProject(build, projectTarget);
+            return locateBuilderForProjectTarget(project, toolingModelContext);
+        }
+
+        private ToolingModelScope locateBuilderForBuildTarget(BuildTreeModelTarget.Build buildTarget, ToolingModelRequestContext toolingModelContext) {
+            BuildState build = findBuild(buildTarget.getBuildRootDir());
+            return locateBuilderForBuildTarget(build, toolingModelContext);
+        }
+
+        private ToolingModelScope locateBuilderForBuildTarget(BuildState target, ToolingModelRequestContext toolingModelContext) {
+            return target.withToolingModels(toolingModelContext.inResilientContext(), controller -> controller.locateBuilderForTarget(toolingModelContext));
+        }
+
+        private ToolingModelScope locateBuilderForProjectTarget(ProjectState target, ToolingModelRequestContext toolingModelContext) {
+            return target.getOwner().withToolingModels(toolingModelContext.inResilientContext(), controller -> controller.locateBuilderForTarget(target, toolingModelContext));
+        }
+
+        private BuildState findBuild(File targetBuildRootDir) {
+            AtomicReference<@Nullable BuildState> match = new AtomicReference<>();
+            buildStateRegistry.visitBuilds(buildState -> {
+                if (buildState.isImportableBuild() && buildState.getBuildRootDir().equals(targetBuildRootDir)) {
+                    match.set(buildState);
+                }
+            });
+            BuildState buildState = match.get();
+            if (buildState != null) {
+                return buildState;
+            } else {
+                throw new IllegalArgumentException(targetBuildRootDir + " is not included in this build");
+            }
+        }
+
+        private ProjectState findProject(BuildState build, BuildTreeModelTarget.Project project) {
+            if (!build.isProjectsLoaded()) {
+                build.ensureProjectsLoaded();
+            }
+            return build.getProjects().getProject(project.getProjectPath());
         }
     }
 }

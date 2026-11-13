@@ -16,21 +16,12 @@
 
 package org.gradle.internal.build;
 
-import org.gradle.api.artifacts.component.BuildIdentifier;
 import org.gradle.api.internal.BuildDefinition;
-import org.gradle.internal.service.scopes.Scopes;
+import org.gradle.internal.service.scopes.Scope;
 import org.gradle.internal.service.scopes.ServiceScope;
 import org.gradle.util.Path;
 
-@ServiceScope(Scopes.BuildTree.class)
+@ServiceScope(Scope.BuildTree.class)
 public interface IncludedBuildFactory {
-    IncludedBuildState createBuild(BuildIdentifier buildIdentifier, Path identityPath, BuildDefinition buildDefinition, boolean isImplicit, BuildState owner);
-
-    /**
-     * Should be called after the build is included and any listeners notified
-     * This ensures that the required classloaders are created in the right order which is required for configuration cache
-     */
-    default void prepareBuild(IncludedBuildState includedBuild) {
-        includedBuild.ensureProjectsLoaded();
-    }
+    IncludedBuildState createBuild(Path identityPath, BuildDefinition buildDefinition, boolean isImplicit, BuildState owner);
 }

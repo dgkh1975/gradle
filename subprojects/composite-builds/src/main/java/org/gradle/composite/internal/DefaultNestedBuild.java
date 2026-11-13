@@ -16,76 +16,63 @@
 
 package org.gradle.composite.internal;
 
-import org.gradle.api.artifacts.component.BuildIdentifier;
 import org.gradle.api.internal.BuildDefinition;
-import org.gradle.api.internal.GradleInternal;
-import org.gradle.initialization.exception.ExceptionAnalyser;
+import org.gradle.initialization.IncludedBuildSpec;
+import org.gradle.internal.UncheckedException;
 import org.gradle.internal.build.AbstractBuildState;
 import org.gradle.internal.build.BuildState;
 import org.gradle.internal.build.ExecutionResult;
 import org.gradle.internal.build.StandAloneNestedBuild;
-import org.gradle.internal.buildtree.BuildModelParameters;
 import org.gradle.internal.buildtree.BuildTreeFinishExecutor;
 import org.gradle.internal.buildtree.BuildTreeLifecycleController;
 import org.gradle.internal.buildtree.BuildTreeLifecycleControllerFactory;
-import org.gradle.internal.buildtree.BuildTreeState;
+import org.gradle.internal.buildtree.BuildTreeServices;
 import org.gradle.internal.buildtree.BuildTreeWorkExecutor;
 import org.gradle.internal.buildtree.DefaultBuildTreeWorkExecutor;
-import org.gradle.internal.concurrent.Stoppable;
-import org.gradle.internal.service.scopes.BuildScopeServices;
+import org.gradle.internal.concurrent.CompositeStoppable;
+import org.gradle.internal.exception.ExceptionAnalyser;
+import org.gradle.internal.service.ManagedServiceRegistry;
 import org.gradle.util.Path;
+import org.jspecify.annotations.Nullable;
 
-import javax.annotation.Nullable;
 import java.io.File;
 import java.util.List;
 import java.util.function.Function;
 
-class DefaultNestedBuild extends AbstractBuildState implements StandAloneNestedBuild, Stoppable {
-    private final Path identityPath;
+class DefaultNestedBuild extends AbstractBuildState implements StandAloneNestedBuild {
+
     private final BuildState owner;
-    private final BuildIdentifier buildIdentifier;
     private final BuildDefinition buildDefinition;
     private final BuildTreeLifecycleController buildTreeLifecycleController;
 
     DefaultNestedBuild(
-        BuildIdentifier buildIdentifier,
         Path identityPath,
         BuildDefinition buildDefinition,
         BuildState owner,
-        BuildTreeState buildTree
+        BuildTreeServices buildTreeServices
     ) {
-        super(buildTree, buildDefinition, owner);
-        this.buildIdentifier = buildIdentifier;
-        this.identityPath = identityPath;
+        super(buildTreeServices, buildDefinition, identityPath, owner);
         this.buildDefinition = buildDefinition;
         this.owner = owner;
 
-        BuildScopeServices buildScopeServices = getBuildServices();
-        ExceptionAnalyser exceptionAnalyser = buildScopeServices.get(ExceptionAnalyser.class);
-        BuildModelParameters modelParameters = buildScopeServices.get(BuildModelParameters.class);
-        BuildTreeWorkExecutor workExecutor = new DefaultBuildTreeWorkExecutor();
-        BuildTreeLifecycleControllerFactory buildTreeLifecycleControllerFactory = buildScopeServices.get(BuildTreeLifecycleControllerFactory.class);
+        ManagedServiceRegistry buildScopeServices = getBuildServices();
+        try {
+            ExceptionAnalyser exceptionAnalyser = buildScopeServices.get(ExceptionAnalyser.class);
+            BuildTreeWorkExecutor workExecutor = new DefaultBuildTreeWorkExecutor();
+            BuildTreeLifecycleControllerFactory buildTreeLifecycleControllerFactory = buildScopeServices.get(BuildTreeLifecycleControllerFactory.class);
 
-        // On completion of the action, finish only this build and do not finish any other builds
-        // When the build model is required, then do not finish anything on completion of the action
-        // The root build will take care of finishing this build later, if not finished now
-        BuildTreeFinishExecutor finishExecutor;
-        if (modelParameters.isRequiresBuildModel()) {
-            finishExecutor = new DoNothingBuildFinishExecutor(exceptionAnalyser);
-        } else {
-            finishExecutor = new FinishThisBuildOnlyFinishExecutor(exceptionAnalyser);
+            // On completion of the action, do not finish this build. The root build will take care of finishing this build later
+            BuildTreeFinishExecutor finishExecutor = new DoNothingBuildFinishExecutor(exceptionAnalyser);
+            buildTreeLifecycleController = buildTreeLifecycleControllerFactory.createController(getBuildController(), workExecutor, finishExecutor);
+        } catch (Throwable t) {
+            CompositeStoppable.stoppable().addFailure(t).add(buildScopeServices).stop();
+            throw UncheckedException.throwAsUncheckedException(t);
         }
-        buildTreeLifecycleController = buildTreeLifecycleControllerFactory.createController(getBuildController(), workExecutor, finishExecutor);
     }
 
     @Override
-    public BuildIdentifier getBuildIdentifier() {
-        return buildIdentifier;
-    }
-
-    @Override
-    public Path getIdentityPath() {
-        return identityPath;
+    public BuildDefinition getBuildDefinition() {
+        return buildDefinition;
     }
 
     @Override
@@ -94,8 +81,8 @@ class DefaultNestedBuild extends AbstractBuildState implements StandAloneNestedB
     }
 
     @Override
-    public void stop() {
-        getBuildController().stop();
+    public BuildState getOwner() {
+        return owner;
     }
 
     @Override
@@ -109,28 +96,12 @@ class DefaultNestedBuild extends AbstractBuildState implements StandAloneNestedB
     }
 
     @Override
-    public Path getCurrentPrefixForProjectsInChildBuilds() {
-        return owner.getCurrentPrefixForProjectsInChildBuilds().child(buildDefinition.getName());
-    }
-
-    @Override
-    public Path calculateIdentityPathForProject(Path projectPath) {
-        return getBuildController().getGradle().getIdentityPath().append(projectPath);
-    }
-
-    @Override
     public File getBuildRootDir() {
         return buildDefinition.getBuildRootDir();
     }
 
     @Override
-    public GradleInternal getBuild() {
-        return getBuildController().getGradle();
-    }
-
-    @Override
-    public GradleInternal getMutableModel() {
-        return getBuildController().getGradle();
+    public void assertCanAdd(IncludedBuildSpec includedBuildSpec) {
     }
 
     private static class DoNothingBuildFinishExecutor implements BuildTreeFinishExecutor {
@@ -144,22 +115,6 @@ class DefaultNestedBuild extends AbstractBuildState implements StandAloneNestedB
         @Nullable
         public RuntimeException finishBuildTree(List<Throwable> failures) {
             return exceptionAnalyser.transform(failures);
-        }
-    }
-
-    private class FinishThisBuildOnlyFinishExecutor implements BuildTreeFinishExecutor {
-        private final ExceptionAnalyser exceptionAnalyser;
-
-        public FinishThisBuildOnlyFinishExecutor(ExceptionAnalyser exceptionAnalyser) {
-            this.exceptionAnalyser = exceptionAnalyser;
-        }
-
-        @Override
-        @Nullable
-        public RuntimeException finishBuildTree(List<Throwable> failures) {
-            RuntimeException reportable = exceptionAnalyser.transform(failures);
-            ExecutionResult<Void> finishResult = getBuildController().finishBuild(reportable);
-            return exceptionAnalyser.transform(ExecutionResult.maybeFailed(reportable).withFailures(finishResult).getFailures());
         }
     }
 }

@@ -16,10 +16,13 @@
 
 package org.gradle.api.tasks
 
-import spock.lang.Unroll
+import org.gradle.integtests.fixtures.modes.UnsupportedWithIsolatedProjects
+import org.gradle.test.precondition.Requires
+import org.gradle.test.preconditions.TestExecutionPreconditions
 
 class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionIntegrationTest {
     def "reports failure in task constructor when task realized"() {
+        createDirs("child")
         settingsFile << """
             include "child"
         """
@@ -41,6 +44,7 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
     }
 
     def "reports failure in task configuration block when task created"() {
+        createDirs("child")
         settingsFile << """
             include "child"
         """
@@ -58,6 +62,7 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
     }
 
     def "reports failure in configure block when task created"() {
+        createDirs("child")
         settingsFile << """
             include "child"
         """
@@ -143,7 +148,6 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
         failure.assertHasCause("Unable to determine constructor argument #1: missing parameter of type String, or no service of type String")
     }
 
-    @Unroll
     def "fails when #description constructor argument is wrong type"() {
         given:
         buildFile << CUSTOM_TASK_WITH_CONSTRUCTOR_ARGS
@@ -162,7 +166,6 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
         'last'      | '"abc", "123"'  | 2              | 'int'
     }
 
-    @Unroll
     def "fails to create when null passed as a constructor argument value at #position"() {
         given:
         buildFile << CUSTOM_TASK_WITH_CONSTRUCTOR_ARGS
@@ -180,8 +183,12 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
         2        | "tasks.register('myTask', CustomTask, 'abc', null)"
     }
 
-    @Unroll
+    @UnsupportedWithIsolatedProjects(
+        because = "These methods cannot be used at project scope with Isolated Projects",
+        iterationMatchers = [".*Gradle#beforeProject.*", ".*Gradle#afterProject.*"]
+    )
     def "cannot execute #description during lazy task creation action execution"() {
+        createDirs("nested")
         settingsFile << "include 'nested'"
         buildFile << """
             tasks.register("foo") {
@@ -198,8 +205,12 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
         [description, code] << INVALID_CALL_FROM_LAZY_CONFIGURATION
     }
 
-    @Unroll
+    @UnsupportedWithIsolatedProjects(
+        because = "These methods cannot be used at project scope with Isolated Projects",
+        iterationMatchers = [".*Gradle#beforeProject.*", ".*Gradle#afterProject.*"]
+    )
     def "cannot execute #description during lazy task configuration action execution"() {
+        createDirs("nested")
         settingsFile << "include 'nested'"
         buildFile << """
             tasks.register("foo").configure {
@@ -216,8 +227,12 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
         [description, code] << INVALID_CALL_FROM_LAZY_CONFIGURATION
     }
 
-    @Unroll
+    @Requires(
+        value = TestExecutionPreconditions.NotIsolatedProjects,
+        reason = "Exercises IP incompatible behavior"
+    )
     def "cannot execute #description on another project during lazy task creation action execution"() {
+        createDirs("nested", "other")
         settingsFile << "include 'nested', 'other'"
         buildFile << """
             project(":other") {
@@ -236,8 +251,12 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
         [description, code] << INVALID_CALL_FROM_LAZY_CONFIGURATION
     }
 
-    @Unroll
+    @Requires(
+        value = TestExecutionPreconditions.NotIsolatedProjects,
+        reason = "Exercises IP incompatible behavior"
+    )
     def "cannot execute #description on another project during lazy task configuration action execution"() {
+        createDirs("nested", "other")
         settingsFile << "include 'nested', 'other'"
         buildFile << """
             project(":other") {
@@ -256,7 +275,6 @@ class DeferredTaskFailureIntegrationTest extends AbstractDeferredTaskDefinitionI
         [description, code] << INVALID_CALL_FROM_LAZY_CONFIGURATION
     }
 
-    @Unroll
     def "gets useful message when using improper type for named using #api"() {
         buildFile << """
             class CustomTask extends DefaultTask {

@@ -18,13 +18,11 @@ package org.gradle.api.internal.tasks.properties;
 
 import org.gradle.internal.fingerprint.DirectorySensitivity;
 import org.gradle.internal.fingerprint.LineEndingSensitivity;
-
-import javax.annotation.Nullable;
+import org.gradle.internal.properties.InputBehavior;
+import org.jspecify.annotations.Nullable;
 
 public interface InputFilePropertySpec extends FilePropertySpec {
-    boolean isSkipWhenEmpty();
-
-    boolean isIncremental();
+    InputBehavior getBehavior();
 
     DirectorySensitivity getDirectorySensitivity();
 
